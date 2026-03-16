@@ -1,0 +1,357 @@
+"""Tool definitions (Claude schema) and implementations."""
+
+import json
+import os
+from datetime import datetime
+
+import httpx
+
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Tool definitions — these get passed to Claude's `tools` parameter
+# ---------------------------------------------------------------------------
+
+TOOL_DEFINITIONS = [
+    {
+        "name": "search_events",
+        "description": (
+            "Search the web for local events, festivals, pop-ups, shows, and "
+            "happenings in or near Atlanta. Returns relevant search results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search query. Be specific — include neighborhood names, "
+                        "dates, and event types. Example: 'Reynoldstown pop-up market "
+                        "March 2026' or 'Atlanta drag brunch this weekend'"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_outdoors",
+        "description": (
+            "Search for outdoor activities: hiking trails, bike routes, kayaking "
+            "spots, scenic drives, etc. Can search for trail conditions, seasonal "
+            "info (wildflowers, foliage), and nearby amenities."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Search query. Example: 'best wildflower hikes north georgia "
+                        "march' or 'kayaking Chattahoochee spring conditions'"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_weather",
+        "description": (
+            "Get the weather forecast for Atlanta or a specific location. "
+            "Returns a multi-day forecast with temperature, precipitation, and conditions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lat": {
+                    "type": "number",
+                    "description": "Latitude. Defaults to Atlanta (33.749) if omitted.",
+                },
+                "lon": {
+                    "type": "number",
+                    "description": "Longitude. Defaults to Atlanta (-84.358) if omitted.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "save_recommendation",
+        "description": (
+            "Save an activity recommendation for the weekly report. Call this for "
+            "every activity worth recommending. Include enough detail for the report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Activity name"},
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "local_event",
+                        "food_and_drink",
+                        "outdoor_adventure",
+                        "arts_and_culture",
+                        "seasonal_unique",
+                        "weekday_alert",
+                    ],
+                },
+                "date": {"type": "string", "description": "When it's happening"},
+                "location": {"type": "string", "description": "Where — venue, address, or area"},
+                "drive_time": {
+                    "type": "string",
+                    "description": "Approximate drive time from Reynoldstown, or 'walkable'",
+                },
+                "why_recommended": {
+                    "type": "string",
+                    "description": (
+                        "Why this is worth doing. Mention weather suitability, "
+                        "uniqueness, seasonal relevance, etc."
+                    ),
+                },
+                "combo_suggestion": {
+                    "type": "string",
+                    "description": (
+                        "Optional: nearby activities to pair with this "
+                        "(e.g., 'hit the farmers market in Dahlonega after')"
+                    ),
+                },
+                "url": {"type": "string", "description": "Link for more info"},
+            },
+            "required": ["title", "category", "date", "location", "why_recommended"],
+        },
+    },
+    {
+        "name": "read_page",
+        "description": (
+            "Fetch and read the full content of a web page. Use this to get "
+            "details from URLs found in search results — event pages, trail "
+            "descriptions, restaurant menus, calendar listings, etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch and read.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "propose_new_tool",
+        "description": (
+            "Propose a new tool/capability that would help your research. This "
+            "sends a notification to the user for review and approval. Do NOT wait "
+            "for approval — continue your research with existing tools. Examples: "
+            "'check AllTrails for trail conditions', 'search OpenTable for restaurant "
+            "availability', 'check Atlanta BeltLine event calendar'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Tool name in snake_case",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What the tool does and why it would be useful",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why existing tools aren't sufficient for this",
+                },
+                "suggested_implementation": {
+                    "type": "string",
+                    "description": (
+                        "Python code for the tool implementation. Should be a single "
+                        "async function that takes a dict input and returns a string. "
+                        "httpx is already available — prefer it for HTTP requests."
+                    ),
+                },
+                "dependencies": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Python packages required beyond what's already installed "
+                        "(httpx, anthropic, slack-sdk are available). "
+                        "Example: ['beautifulsoup4', 'lxml']. Omit if none needed."
+                    ),
+                },
+                "input_schema": {
+                    "type": "object",
+                    "description": "JSON Schema for the tool's input parameters",
+                },
+            },
+            "required": ["name", "description", "rationale", "suggested_implementation"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+
+async def search_tavily(query: str, search_depth: str = "basic") -> str:
+    """General-purpose web search via Tavily."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": search_depth,
+                "include_answer": True,
+                "max_results": 8,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    # Format results for the LLM
+    parts = []
+    if data.get("answer"):
+        parts.append(f"Summary: {data['answer']}\n")
+
+    for r in data.get("results", []):
+        parts.append(f"- {r['title']}\n  {r['url']}\n  {r.get('content', '')[:300]}")
+
+    return "\n\n".join(parts) if parts else "No results found."
+
+
+async def extract_page(url: str) -> str:
+    """Fetch clean content from a URL via Tavily's extract endpoint."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            "https://api.tavily.com/extract",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "urls": [url],
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    results = data.get("results", [])
+    if not results:
+        # Fallback: try a direct fetch and return raw text (truncated)
+        return await _direct_fetch(url)
+
+    content = results[0].get("raw_content", "") or results[0].get("content", "")
+    # Truncate to avoid blowing up the LLM context
+    if len(content) > 8000:
+        content = content[:8000] + "\n\n[... truncated — page content exceeded 8000 chars]"
+    return content
+
+
+async def _direct_fetch(url: str) -> str:
+    """Fallback: fetch page directly and return text content."""
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        response = await client.get(url, headers={"User-Agent": "weekend-activity-agent/0.1"})
+        response.raise_for_status()
+    text = response.text
+    if len(text) > 8000:
+        text = text[:8000] + "\n\n[... truncated]"
+    return text
+
+
+async def get_weather_forecast(lat: float = 33.749, lon: float = -84.358) -> str:
+    """Fetch forecast from weather.gov (free, no key, US only)."""
+    headers = {"User-Agent": "weekend-activity-agent/0.1 (contact@example.com)"}
+
+    async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+        # Step 1: resolve lat/lon to a forecast grid
+        points_resp = await client.get(f"https://api.weather.gov/points/{lat},{lon}")
+        points_resp.raise_for_status()
+        forecast_url = points_resp.json()["properties"]["forecast"]
+
+        # Step 2: get the actual forecast
+        forecast_resp = await client.get(forecast_url)
+        forecast_resp.raise_for_status()
+        periods = forecast_resp.json()["properties"]["periods"]
+
+    # Format for the LLM — next 7 periods (~ 3.5 days)
+    lines = []
+    for p in periods[:10]:
+        lines.append(
+            f"{p['name']}: {p['temperature']}\u00b0{p['temperatureUnit']}, "
+            f"{p['shortForecast']}. Wind: {p['windSpeed']} {p['windDirection']}. "
+            f"{p['detailedForecast']}"
+        )
+    return "\n\n".join(lines)
+
+
+async def dispatch_tool(name: str, tool_input: dict) -> str:
+    """Dispatch a tool call. Async — runs inside Temporal's event loop."""
+    match name:
+        case "search_events":
+            query = f"Atlanta {tool_input['query']} events {_this_weekend()}"
+            return await search_tavily(query, search_depth="advanced")
+
+        case "search_outdoors":
+            query = f"{tool_input['query']} near Atlanta Georgia"
+            return await search_tavily(query, search_depth="advanced")
+
+        case "read_page":
+            return await extract_page(tool_input["url"])
+
+        case "get_weather":
+            lat = tool_input.get("lat", 33.749)
+            lon = tool_input.get("lon", -84.358)
+            return await get_weather_forecast(lat, lon)
+
+        case "save_recommendation":
+            return "Recommendation saved."
+
+        case "propose_new_tool":
+            return "Tool proposal submitted for review. Continuing with existing tools."
+
+        case _:
+            return await _dispatch_dynamic_tool(name, tool_input)
+
+
+async def _dispatch_dynamic_tool(name: str, tool_input: dict) -> str:
+    """Load and execute a dynamically approved tool from dynamic_tools/."""
+    import importlib.util
+    from pathlib import Path
+
+    tool_path = Path(__file__).parent / "dynamic_tools" / f"{name}.py"
+    if not tool_path.exists():
+        raise ValueError(f"Unknown tool: {name}")
+
+    spec = importlib.util.spec_from_file_location(name, tool_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Look for run(), or fall back to the first async callable matching the tool name
+    import inspect
+    fn = getattr(module, "run", None)
+    if fn is None:
+        fn = getattr(module, name, None)
+    if fn is None:
+        # Find any async function in the module
+        for attr_name, attr in inspect.getmembers(module, inspect.iscoroutinefunction):
+            if not attr_name.startswith("_"):
+                fn = attr
+                break
+    if fn is None:
+        raise ValueError(f"Dynamic tool {name} has no callable function")
+
+    return await fn(tool_input)
+
+
+def _this_weekend() -> str:
+    """Returns a string like 'March 21-22 2026' for the coming weekend."""
+    today = datetime.now()
+    days_until_saturday = (5 - today.weekday()) % 7
+    if days_until_saturday == 0 and today.weekday() != 5:
+        days_until_saturday = 7
+    from datetime import timedelta
+    saturday = today + timedelta(days=days_until_saturday)
+    sunday = saturday + timedelta(days=1)
+    return f"{saturday.strftime('%B %d')}-{sunday.strftime('%d')} {saturday.year}"
