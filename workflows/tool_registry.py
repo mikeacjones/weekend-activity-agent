@@ -29,6 +29,7 @@ class ToolRegistryWorkflow:
     def __init__(self):
         self.proposals: dict[str, dict] = {}
         self._has_updates: bool = False
+        self._initial_proposals: dict[str, dict] = {}
 
     # --- Signals (mutations from external sources) ---
 
@@ -100,7 +101,7 @@ class ToolRegistryWorkflow:
     # --- Main loop ---
 
     @workflow.run
-    async def run(self):
+    async def run(self, carry_over: dict[str, dict] | None = None):
         """
         Runs forever. Periodically expires old proposals.
 
@@ -108,6 +109,9 @@ class ToolRegistryWorkflow:
         Uses continue_as_new periodically to keep history bounded, carrying
         over active proposals.
         """
+        if carry_over:
+            self.proposals = carry_over
+
         cycles = 0
         max_cycles_before_reset = 365  # continue_as_new after ~1 year
 
@@ -115,7 +119,6 @@ class ToolRegistryWorkflow:
             cycles += 1
             self._has_updates = False
 
-            # Wait for a signal or wake up daily to check expirations
             await workflow.wait_condition(
                 lambda: self._has_updates,
                 timeout=timedelta(days=1),
@@ -123,17 +126,12 @@ class ToolRegistryWorkflow:
 
             self._expire_old_proposals()
 
-        # Carry over non-expired proposals into the new workflow execution
+        # Carry over active proposals into the new execution
         active = {
             pid: p for pid, p in self.proposals.items()
             if p["status"] in ("pending", "approved")
         }
-        workflow.continue_as_new()
-        # Note: continue_as_new restarts with __init__, so we need to
-        # pass active proposals. We'll handle this by signaling ourselves
-        # after continue_as_new — or simpler, just let approved tools
-        # persist via the filesystem (dynamic_tools/) and let pending
-        # proposals expire naturally.
+        workflow.continue_as_new(args=[active])
 
     def _expire_old_proposals(self):
         """Mark pending proposals older than TTL as expired."""
@@ -150,15 +148,3 @@ class ToolRegistryWorkflow:
                     f"Proposal expired (15d TTL): {proposal['name']} ({pid})"
                 )
 
-    async def _write_tool_implementation(self, proposal: dict):
-        """Write approved tool code to dynamic_tools/<name>.py."""
-        # Note: In a production system you'd want this as an activity
-        # (filesystem I/O shouldn't be in workflow code). Keeping it here
-        # for simplicity — the real implementation would be:
-        #
-        #   await workflow.execute_activity(
-        #       write_dynamic_tool, args=[proposal], ...
-        #   )
-        #
-        # For now, the CLI handles writing the file on approval.
-        pass
