@@ -31,7 +31,8 @@ TASK_QUEUE = "weekend-activity-agent"
 
 async def main():
     temporal_address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-    client = await Client.connect(temporal_address)
+    temporal_namespace = os.environ.get("TEMPORAL_NAMESPACE", "weekend-activity-agent")
+    client = await Client.connect(temporal_address, namespace=temporal_namespace)
 
     # Start Slack Socket Mode listener in a background thread.
     # Shares the Temporal client so interactions route through Temporal.

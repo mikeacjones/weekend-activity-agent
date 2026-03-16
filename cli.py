@@ -16,7 +16,8 @@ TASK_QUEUE = "weekend-activity-agent"
 async def get_client() -> Client:
     load_dotenv()
     address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-    return await Client.connect(address)
+    namespace = os.environ.get("TEMPORAL_NAMESPACE", "weekend-activity-agent")
+    return await Client.connect(address, namespace=namespace)
 
 
 # ---------------------------------------------------------------------------

@@ -15,8 +15,9 @@ async def main():
     load_dotenv()
 
     temporal_address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
+    temporal_namespace = os.environ.get("TEMPORAL_NAMESPACE", "weekend-activity-agent")
     slack_channel = os.environ.get("SLACK_CHANNEL_ID", "")
-    client = await Client.connect(temporal_address)
+    client = await Client.connect(temporal_address, namespace=temporal_namespace)
 
     # Start the tool registry (long-running, manages dynamic tool proposals)
     try:

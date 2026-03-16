@@ -1,10 +1,13 @@
 services:
   agent:
     build: .
+    container_name: weekend-activity-agent
     env_file: .env
     volumes:
       # Persist dynamic tools + their deps across container restarts
       - ./dynamic_tools:/app/dynamic_tools
+    networks:
+      - temporal-network
     restart: unless-stopped
     # Default CMD is "worker" — starts Temporal worker + Slack listener
 
@@ -14,5 +17,11 @@ services:
     env_file: .env
     volumes:
       - ./dynamic_tools:/app/dynamic_tools
+    networks:
+      - temporal-network
     entrypoint: ["/app/entrypoint.sh", "cli"]
     profiles: [tools]
+
+networks:
+  temporal-network:
+    external: true
