@@ -9,6 +9,7 @@ fi
 
 case "$1" in
     worker)
+        uv run python start.py
         exec uv run python worker.py
         ;;
     start)
