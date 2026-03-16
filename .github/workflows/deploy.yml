@@ -1,0 +1,48 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Docker is running
+        run: |
+          if ! docker info > /dev/null 2>&1; then
+            echo "Docker is not running"
+            exit 1
+          fi
+
+      - name: Write .env from secrets
+        run: |
+          printf '%s\n' \
+            "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" \
+            "TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}" \
+            "SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }}" \
+            "SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }}" \
+            "SLACK_CHANNEL_ID=${{ secrets.SLACK_CHANNEL_ID }}" \
+            "TEMPORAL_ADDRESS=temporal:7233" \
+            "TEMPORAL_NAMESPACE=weekend-activity-agent" \
+            > .env
+
+      - name: Ensure dynamic_tools directory exists
+        run: mkdir -p dynamic_tools
+
+      - name: Build and deploy
+        run: |
+          docker compose down --remove-orphans || true
+          docker compose build
+          docker compose up -d agent
+
+      - name: Verify
+        run: |
+          echo "=== Container Status ==="
+          docker compose ps
