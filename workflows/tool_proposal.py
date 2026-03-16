@@ -96,12 +96,13 @@ class ToolProposalWorkflow:
             if remaining.total_seconds() <= 0:
                 break
 
-            timed_out = not await workflow.wait_condition(
+            await workflow.wait_condition(
                 lambda: self._resolved or bool(self._pending_messages),
                 timeout=remaining,
             )
 
-            if timed_out:
+            # Check actual state — don't rely on the return value
+            if not self._resolved and not self._pending_messages:
                 break
 
             # Process any pending discussion messages

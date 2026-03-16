@@ -84,14 +84,14 @@ class ConversationWorkflow:
 
         # Wait for follow-up messages with inactivity TTL
         while not self._closed:
-            # Check pending_messages directly — avoids race where a signal
-            # arrives during _handle_user_message and gets lost
-            timed_out = not await workflow.wait_condition(
+            await workflow.wait_condition(
                 lambda: bool(self._pending_messages),
                 timeout=INACTIVITY_TTL,
             )
 
-            if timed_out:
+            # Always check the queue directly — don't rely on the return value,
+            # which can be wrong after a code-change replay
+            if not self._pending_messages:
                 await self._post_to_thread(
                     ":wave: Closing this thread — no activity for 2 days. "
                     "Tag me again anytime to start a new conversation!"
@@ -99,7 +99,6 @@ class ConversationWorkflow:
                 self._closed = True
                 break
 
-            # Process all pending messages
             while self._pending_messages:
                 msg = self._pending_messages.pop(0)
                 await self._handle_user_message(
