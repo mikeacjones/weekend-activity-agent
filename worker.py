@@ -17,6 +17,7 @@ from activities import (
     get_current_weather_summary,
     notify_tool_proposal,
     send_slack_message,
+    write_dynamic_tool,
 )
 from workflows import (
     AgenticResearchWorkflow,
@@ -54,6 +55,7 @@ async def main():
             send_slack_message,
             notify_tool_proposal,
             get_current_weather_summary,
+            write_dynamic_tool,
         ],
     )
 

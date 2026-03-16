@@ -122,37 +122,9 @@ async def cmd_approve(args):
             print("Cancelled.")
             return
 
-    # Write the implementation file
-    if proposal.get("suggested_implementation"):
-        tool_dir = Path(__file__).parent / "dynamic_tools"
-        tool_dir.mkdir(exist_ok=True)
-        tool_file = tool_dir / f"{proposal['name']}.py"
-
-        # Wrap in standard interface if it's not already
-        code = proposal["suggested_implementation"]
-        if "async def run(" not in code:
-            code = f'"""{proposal["description"]}"""\n\n{code}'
-
-        tool_file.write_text(code)
-        print(f"Wrote implementation to {tool_file}")
-
-    # Install any new dependencies
-    deps = proposal.get("dependencies", [])
-    if deps:
-        import subprocess
-        print(f"Installing dependencies: {', '.join(deps)}")
-        subprocess.run(["uv", "pip", "install", *deps], check=True)
-        # Persist for container restarts
-        req_file = tool_dir / "requirements.txt"
-        existing = set()
-        if req_file.exists():
-            existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
-        existing.update(deps)
-        req_file.write_text("\n".join(sorted(existing)) + "\n")
-
-    # Signal the registry
+    # Signal the registry — it handles writing the tool and installing deps via activity
     await handle.signal("approve_tool", args.proposal_id)
-    print(f"Tool '{proposal['name']}' approved. It will be available on the next research run.")
+    print(f"Tool '{proposal['name']}' approved. The registry workflow will write the tool and install dependencies.")
 
 
 async def cmd_reject(args):

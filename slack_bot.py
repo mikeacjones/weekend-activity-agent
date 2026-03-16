@@ -19,8 +19,6 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from temporalio.client import Client
 
-from pathlib import Path
-
 
 def create_slack_app(temporal_client: Client) -> App:
     """Create and configure the Slack app with all action handlers."""
@@ -57,7 +55,6 @@ def create_slack_app(temporal_client: Client) -> App:
                 )
                 return
 
-            _write_dynamic_tool(proposal)
             await handle.signal("approve_tool", proposal_id)
 
             client.chat_postMessage(
@@ -236,43 +233,6 @@ def _extract_recommendation_context(slug: str, blocks: list[dict]) -> str:
                 break
 
     return "\n".join(parts) if parts else f"Activity: {_slug_to_title(slug)}"
-
-
-def _write_dynamic_tool(proposal: dict):
-    tool_dir = Path(__file__).parent / "dynamic_tools"
-    tool_dir.mkdir(exist_ok=True)
-    tool_file = tool_dir / f"{proposal['name']}.py"
-
-    code = proposal.get("suggested_implementation", "")
-    if not code:
-        return
-
-    header = f'"""{proposal["description"]}"""\n\n'
-    if "async def run(" not in code:
-        code = f"{header}{code}"
-
-    tool_file.write_text(code)
-
-    # Install any new dependencies
-    deps = proposal.get("dependencies", [])
-    if deps:
-        _install_dynamic_deps(deps)
-
-
-def _install_dynamic_deps(deps: list[str]):
-    """Install dependencies and persist them for container restarts."""
-    import subprocess
-
-    # Install into the current environment
-    subprocess.run(["uv", "pip", "install", *deps], check=True)
-
-    # Persist to requirements file so they survive container restarts
-    req_file = Path(__file__).parent / "dynamic_tools" / "requirements.txt"
-    existing = set()
-    if req_file.exists():
-        existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
-    existing.update(deps)
-    req_file.write_text("\n".join(sorted(existing)) + "\n")
 
 
 def start_socket_mode(temporal_client: Client):

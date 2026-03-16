@@ -285,6 +285,40 @@ async def notify_tool_proposal(proposal: dict):
 
 
 @activity.defn
+async def write_dynamic_tool(proposal: dict):
+    """Write an approved tool's code to dynamic_tools/ and install its dependencies."""
+    import subprocess
+    from pathlib import Path
+
+    activity.heartbeat(f"Writing tool: {proposal['name']}")
+
+    tool_dir = Path(__file__).parent / "dynamic_tools"
+    tool_dir.mkdir(exist_ok=True)
+
+    # Write the implementation file
+    code = proposal.get("suggested_implementation", "")
+    if code:
+        header = f'"""{proposal["description"]}"""\n\n'
+        if "async def run(" not in code:
+            code = f"{header}{code}"
+        tool_file = tool_dir / f"{proposal['name']}.py"
+        tool_file.write_text(code)
+
+    # Install any new dependencies
+    deps = proposal.get("dependencies", [])
+    if deps:
+        activity.heartbeat(f"Installing deps: {deps}")
+        subprocess.run(["uv", "pip", "install", *deps], check=True)
+        # Persist for container restarts
+        req_file = tool_dir / "requirements.txt"
+        existing = set()
+        if req_file.exists():
+            existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
+        existing.update(deps)
+        req_file.write_text("\n".join(sorted(existing)) + "\n")
+
+
+@activity.defn
 async def get_current_weather_summary() -> str:
     """Fetch the current weather forecast and return a summary string."""
     activity.heartbeat("Fetching weather")
