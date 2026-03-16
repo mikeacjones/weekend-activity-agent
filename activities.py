@@ -2,7 +2,9 @@
 
 import json
 import os
+import subprocess
 from datetime import datetime
+from pathlib import Path
 
 from anthropic import Anthropic
 from slack_sdk import WebClient
@@ -53,18 +55,18 @@ def serialize_response(response) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Core activities
+# Sync activities — Temporal runs these in a thread pool automatically
 # ---------------------------------------------------------------------------
 
 
 @activity.defn
-async def call_llm(
+def call_llm(
     system_prompt: str,
     messages: list[dict],
     tool_definitions: list[dict],
 ) -> dict:
     """Single LLM inference step. Result is persisted in Temporal history."""
-    activity.heartbeat("Calling Claude")
+    activity.heartbeat("Calling LLM")
     response = anthropic_client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
@@ -76,10 +78,15 @@ async def call_llm(
 
 
 @activity.defn
-async def execute_tool(name: str, tool_input: dict) -> str:
-    """Execute a single tool call. Independently retryable."""
-    activity.heartbeat(f"Executing: {name}")
-    return await dispatch_tool(name, tool_input)
+def call_llm_simple(prompt: str) -> str:
+    """Single LLM call without tools. For follow-up responses, summaries, etc."""
+    activity.heartbeat("Calling LLM")
+    response = anthropic_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
 
 
 REPORT_SYSTEM_PROMPT = """\
@@ -122,7 +129,7 @@ FORMATTING GUIDELINES:
 
 
 @activity.defn
-async def compile_report(
+def compile_report(
     findings: list[dict],
     weather_summary: str,
 ) -> dict:
@@ -150,13 +157,11 @@ Produce the Slack Block Kit message. Return ONLY valid JSON, no markdown fences.
     )
 
     raw = response.content[0].text.strip()
-    # Handle LLM wrapping in ```json ... ```
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
     report = json.loads(raw)
 
-    # Validate structure
     if "blocks" not in report or not isinstance(report["blocks"], list):
         raise ValueError("LLM response missing 'blocks' array")
     if "text" not in report:
@@ -166,33 +171,16 @@ Produce the Slack Block Kit message. Return ONLY valid JSON, no markdown fences.
 
 
 @activity.defn
-async def call_llm_simple(prompt: str) -> str:
-    """Single LLM call without tools. For follow-up responses, summaries, etc."""
-    activity.heartbeat("Calling Claude")
-    response = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
-
-
-@activity.defn
-async def send_slack_message(
+def send_slack_message(
     channel: str,
     text: str,
     blocks: list[dict] | None = None,
     update_ts: str | None = None,
 ) -> dict:
-    """Send or update a Slack message.
-
-    If update_ts is provided, updates that message instead of posting a new one.
-    Returns {"ok", "ts", "channel"}.
-    """
+    """Send or update a Slack message."""
     activity.heartbeat("Sending to Slack")
 
     if update_ts:
-        # Update an existing message (e.g., replace "thinking..." with real content)
         result = slack_client.chat_update(
             channel=channel or SLACK_CHANNEL,
             ts=update_ts,
@@ -216,7 +204,7 @@ async def send_slack_message(
 
 
 @activity.defn
-async def notify_tool_proposal(proposal: dict):
+def notify_tool_proposal(proposal: dict):
     """Send a tool proposal notification to Slack with interactive buttons."""
     activity.heartbeat("Notifying about tool proposal")
 
@@ -285,17 +273,13 @@ async def notify_tool_proposal(proposal: dict):
 
 
 @activity.defn
-async def write_dynamic_tool(proposal: dict):
+def write_dynamic_tool(proposal: dict):
     """Write an approved tool's code to dynamic_tools/ and install its dependencies."""
-    import subprocess
-    from pathlib import Path
-
     activity.heartbeat(f"Writing tool: {proposal['name']}")
 
     tool_dir = Path(__file__).parent / "dynamic_tools"
     tool_dir.mkdir(exist_ok=True)
 
-    # Write the implementation file
     code = proposal.get("suggested_implementation", "")
     if code:
         header = f'"""{proposal["description"]}"""\n\n'
@@ -304,18 +288,28 @@ async def write_dynamic_tool(proposal: dict):
         tool_file = tool_dir / f"{proposal['name']}.py"
         tool_file.write_text(code)
 
-    # Install any new dependencies
     deps = proposal.get("dependencies", [])
     if deps:
         activity.heartbeat(f"Installing deps: {deps}")
         subprocess.run(["uv", "pip", "install", *deps], check=True)
-        # Persist for container restarts
         req_file = tool_dir / "requirements.txt"
         existing = set()
         if req_file.exists():
             existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
         existing.update(deps)
         req_file.write_text("\n".join(sorted(existing)) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Async activities — these use async I/O (httpx) and belong on the event loop
+# ---------------------------------------------------------------------------
+
+
+@activity.defn
+async def execute_tool(name: str, tool_input: dict) -> str:
+    """Execute a single tool call. Independently retryable."""
+    activity.heartbeat(f"Executing: {name}")
+    return await dispatch_tool(name, tool_input)
 
 
 @activity.defn
