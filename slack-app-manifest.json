@@ -1,0 +1,32 @@
+{
+  "display_information": {
+    "name": "Weekend Activity Agent",
+    "description": "AI-powered weekend activity researcher that sends weekly recommendations",
+    "background_color": "#2c2d30",
+    "long_description": "Researches local events, outdoor activities, and unique experiences throughout the week, then delivers a curated weekend plan every Thursday/Friday. Supports interactive feedback and dynamic tool proposals via human-in-the-loop approval."
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Weekend Agent",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "reactions:write",
+        "channels:read",
+        "groups:read"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

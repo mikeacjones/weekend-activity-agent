@@ -1,0 +1,25 @@
+services:
+  agent:
+    build: .
+    env_file: .env
+    volumes:
+      # Persist dynamic tools + their deps across container restarts
+      - ./dynamic_tools:/app/dynamic_tools
+    restart: unless-stopped
+    # Default CMD is "worker" — starts Temporal worker + Slack listener
+
+  # One-off: start the workflows (run once, then exits)
+  start:
+    build: .
+    env_file: .env
+    command: start
+    profiles: [setup]
+
+  # One-off: CLI commands
+  cli:
+    build: .
+    env_file: .env
+    volumes:
+      - ./dynamic_tools:/app/dynamic_tools
+    entrypoint: ["/app/entrypoint.sh", "cli"]
+    profiles: [tools]
