@@ -39,7 +39,7 @@ jobs:
       - name: Build and deploy
         run: |
           docker compose down --remove-orphans || true
-          docker compose build
+          docker compose build --no-cache
           docker compose up -d agent
 
       - name: Verify
