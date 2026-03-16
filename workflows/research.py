@@ -97,12 +97,19 @@ class AgenticResearchWorkflow:
                     continue
 
                 # Regular tool execution
-                result = await workflow.execute_activity(
-                    execute_tool,
-                    args=[tool_call["name"], tool_call["input"]],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=RETRY,
-                )
+                try:
+                    result = await workflow.execute_activity(
+                        execute_tool,
+                        args=[tool_call["name"], tool_call["input"]],
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=RETRY,
+                    )
+                except Exception as e:
+                    workflow.logger.warn(f"Tool {tool_call['name']} failed: {e}")
+                    result = (
+                        f"Tool call failed with error: {e}\n"
+                        f"Continue research with other tools."
+                    )
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call["id"],

@@ -142,6 +142,27 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "read_file",
+        "description": (
+            "Read a file from the agent's project directory. Use this to inspect "
+            "dynamic tool source code, config files, or other local files. "
+            "Paths are relative to the project root."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative path within the project. Example: "
+                        "'dynamic_tools/search_eventbrite.py' or 'config.py'"
+                    ),
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "propose_new_tool",
         "description": (
             "Propose a new tool/capability that would help your research. This "
@@ -402,6 +423,24 @@ async def recall_memories(query: str) -> str:
     return "\n".join(matches)
 
 
+PROJECT_ROOT = Path(__file__).parent
+
+
+def _read_project_file(path: str) -> str:
+    """Read a file scoped to the project directory."""
+    resolved = (PROJECT_ROOT / path).resolve()
+    if not str(resolved).startswith(str(PROJECT_ROOT.resolve())):
+        return "Error: path traversal outside project directory is not allowed."
+    if not resolved.exists():
+        return f"File not found: {path}"
+    if not resolved.is_file():
+        return f"Not a file: {path}"
+    content = resolved.read_text()
+    if len(content) > 8000:
+        content = content[:8000] + "\n\n[... truncated — file exceeded 8000 chars]"
+    return content
+
+
 async def dispatch_tool(name: str, tool_input: dict) -> str:
     """Dispatch a tool call. Async — runs inside Temporal's event loop."""
     match name:
@@ -420,6 +459,9 @@ async def dispatch_tool(name: str, tool_input: dict) -> str:
             lat = tool_input.get("lat", 33.749)
             lon = tool_input.get("lon", -84.358)
             return await get_weather_forecast(lat, lon)
+
+        case "read_file":
+            return _read_project_file(tool_input["path"])
 
         case "save_recommendation":
             return "Recommendation saved."

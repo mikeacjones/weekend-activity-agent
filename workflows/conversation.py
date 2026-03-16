@@ -33,6 +33,7 @@ TOOL_LABELS = {
     "search_outdoors": ":national_park: Searching outdoor activities",
     "get_weather": ":partly_sunny: Checking the weather",
     "read_page": ":globe_with_meridians: Reading page",
+    "read_file": ":page_facing_up: Reading file",
     "save_recommendation": ":pushpin: Saving recommendation",
     "save_memory": ":brain: Saving to memory",
     "recall_memories": ":brain: Checking memory",
@@ -160,12 +161,25 @@ class ConversationWorkflow:
                     })
                     continue
 
-                result = await workflow.execute_activity(
-                    execute_tool,
-                    args=[tool_call["name"], tool_call["input"]],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=RETRY,
-                )
+                try:
+                    result = await workflow.execute_activity(
+                        execute_tool,
+                        args=[tool_call["name"], tool_call["input"]],
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=RETRY,
+                    )
+                except Exception as e:
+                    label = TOOL_LABELS.get(
+                        tool_call["name"], tool_call["name"],
+                    )
+                    await self._post_to_thread(
+                        f":warning: {label} failed: {e}"
+                    )
+                    result = (
+                        f"Tool call failed with error: {e}\n"
+                        f"Let the user know and suggest alternatives."
+                    )
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call["id"],
