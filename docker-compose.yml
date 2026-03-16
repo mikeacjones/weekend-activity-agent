@@ -4,8 +4,8 @@ services:
     container_name: weekend-activity-agent
     env_file: .env
     volumes:
-      # Persist dynamic tools + their deps across container restarts
       - ./dynamic_tools:/app/dynamic_tools
+      - ./memories:/app/memories
     networks:
       - temporal-network
     restart: unless-stopped
@@ -17,6 +17,7 @@ services:
     env_file: .env
     volumes:
       - ./dynamic_tools:/app/dynamic_tools
+      - ./memories:/app/memories
     networks:
       - temporal-network
     entrypoint: ["/app/entrypoint.sh", "cli"]

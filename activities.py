@@ -16,6 +16,7 @@ from tools import TOOL_DEFINITIONS, dispatch_tool
 anthropic_client = Anthropic()
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", ""))
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "")
+LLM_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ def call_llm(
     """Single LLM inference step. Result is persisted in Temporal history."""
     activity.heartbeat("Calling LLM")
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
+        model=LLM_MODEL,
         max_tokens=4096,
         system=system_prompt,
         tools=tool_definitions,
@@ -82,7 +83,7 @@ def call_llm_simple(prompt: str) -> str:
     """Single LLM call without tools. For follow-up responses, summaries, etc."""
     activity.heartbeat("Calling LLM")
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
+        model=LLM_MODEL,
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -139,7 +140,7 @@ def compile_report(
     """
     activity.heartbeat("Compiling report")
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
+        model=LLM_MODEL,
         max_tokens=8192,
         system=REPORT_SYSTEM_PROMPT,
         messages=[{
@@ -176,8 +177,9 @@ def send_slack_message(
     text: str,
     blocks: list[dict] | None = None,
     update_ts: str | None = None,
+    thread_ts: str | None = None,
 ) -> dict:
-    """Send or update a Slack message."""
+    """Send, update, or reply in a thread."""
     activity.heartbeat("Sending to Slack")
 
     if update_ts:
@@ -194,6 +196,8 @@ def send_slack_message(
         }
         if blocks:
             kwargs["blocks"] = blocks
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
         result = slack_client.chat_postMessage(**kwargs)
 
     return {
@@ -265,11 +269,12 @@ def notify_tool_proposal(proposal: dict):
         },
     ]
 
-    slack_client.chat_postMessage(
+    result = slack_client.chat_postMessage(
         channel=SLACK_CHANNEL,
         text=f"New tool proposal: {proposal['name']}",
         blocks=blocks,
     )
+    return {"ts": result["ts"], "channel": result["channel"]}
 
 
 @activity.defn
@@ -298,6 +303,54 @@ def write_dynamic_tool(proposal: dict):
             existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
         existing.update(deps)
         req_file.write_text("\n".join(sorted(existing)) + "\n")
+
+
+@activity.defn
+def discuss_tool_proposal(
+    proposal: dict,
+    discussion_history: list[dict],
+    user_message: str,
+    channel: str,
+    thread_ts: str,
+) -> str:
+    """Discuss a tool proposal with the user in a Slack thread."""
+    activity.heartbeat("Discussing tool proposal")
+
+    code = proposal.get("suggested_implementation", "No code provided")
+    deps = proposal.get("dependencies", [])
+
+    system = (
+        "You are reviewing a tool proposal for an automated weekend activity research agent. "
+        "Help the user understand the tool, answer questions about the implementation, "
+        "and flag any concerns about security, reliability, or dependencies.\n\n"
+        f"TOOL NAME: {proposal['name']}\n"
+        f"DESCRIPTION: {proposal['description']}\n"
+        f"RATIONALE: {proposal.get('rationale', 'N/A')}\n"
+        f"DEPENDENCIES: {', '.join(deps) if deps else 'None'}\n"
+        f"IMPLEMENTATION:\n```python\n{code}\n```"
+    )
+
+    messages = []
+    for entry in discussion_history:
+        messages.append({"role": "user", "content": entry["user_message"]})
+        messages.append({"role": "assistant", "content": entry["response"]})
+    messages.append({"role": "user", "content": user_message})
+
+    response = anthropic_client.messages.create(
+        model=LLM_MODEL,
+        max_tokens=2048,
+        system=system,
+        messages=messages,
+    )
+    reply_text = response.content[0].text
+
+    slack_client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread_ts,
+        text=reply_text,
+    )
+
+    return reply_text
 
 
 # ---------------------------------------------------------------------------

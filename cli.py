@@ -35,53 +35,64 @@ async def cmd_status(args):
 
 
 async def cmd_proposals(args):
-    """List all tool proposals."""
+    """List all tool proposals by querying Temporal's visibility API."""
     client = await get_client()
-    handle = client.get_workflow_handle("tool-registry")
 
+    query = "WorkflowType='ToolProposalWorkflow'"
     if args.pending:
-        proposals = await handle.query("get_pending_proposals")
-        header = "Pending proposals"
-    else:
-        proposals = await handle.query("get_all_proposals")
-        header = "All proposals"
+        query += " AND ExecutionStatus='Running'"
+
+    proposals = []
+    async for workflow in client.list_workflows(query=query):
+        try:
+            handle = client.get_workflow_handle(workflow.id)
+            status = await handle.query("get_status")
+            proposals.append(status)
+        except Exception:
+            proposals.append({
+                "proposal": {"id": workflow.id.replace("tool-proposal-", ""), "name": "?"},
+                "status": str(workflow.status),
+            })
 
     if not proposals:
-        print(f"{header}: none")
+        print("No proposals found.")
         return
 
+    header = "Pending proposals" if args.pending else "All proposals"
     print(f"\n{header}:")
     print("-" * 60)
     for p in proposals:
+        proposal = p.get("proposal", {})
         status_icon = {
             "pending": "?",
             "approved": "+",
             "rejected": "x",
-            "expired": "~",
         }.get(p["status"], " ")
-        print(f"  [{status_icon}] {p['id']}  {p['name']}")
-        print(f"      {p['description']}")
-        print(f"      Status: {p['status']} | Proposed: {p['proposed_at']}")
+        print(f"  [{status_icon}] {proposal.get('id', '?')}  {proposal.get('name', '?')}")
+        print(f"      {proposal.get('description', '')}")
+        print(f"      Status: {p['status']}")
+        if p.get("discussion_count"):
+            print(f"      Discussion messages: {p['discussion_count']}")
         print()
 
 
 async def cmd_review(args):
     """Show the full details and implementation code of a proposal."""
     client = await get_client()
-    handle = client.get_workflow_handle("tool-registry")
-    proposal = await handle.query("get_proposal", args.proposal_id)
+    handle = client.get_workflow_handle(f"tool-proposal-{args.proposal_id}")
 
-    if not proposal:
+    try:
+        proposal = await handle.query("get_proposal")
+    except Exception:
         print(f"Proposal '{args.proposal_id}' not found.")
         sys.exit(1)
 
     print(f"\n{'=' * 60}")
-    print(f"Proposal: {proposal['name']} ({proposal['id']})")
+    print(f"Proposal: {proposal['name']} ({proposal.get('id', args.proposal_id)})")
     print(f"Status:   {proposal['status']}")
-    print(f"Proposed: {proposal['proposed_at']}")
     print(f"{'=' * 60}")
     print(f"\nDescription:\n  {proposal['description']}")
-    print(f"\nRationale:\n  {proposal['rationale']}")
+    print(f"\nRationale:\n  {proposal.get('rationale', 'N/A')}")
 
     if proposal.get("input_schema"):
         print(f"\nInput Schema:")
@@ -93,27 +104,35 @@ async def cmd_review(args):
         print(proposal["suggested_implementation"])
         print("-" * 60)
 
+    if proposal.get("discussion"):
+        print(f"\nDiscussion ({len(proposal['discussion'])} messages):")
+        print("-" * 60)
+        for entry in proposal["discussion"]:
+            print(f"  User: {entry['user_message']}")
+            print(f"  Agent: {entry['response'][:200]}...")
+            print()
+
     if proposal["status"] == "pending":
-        print(f"\nTo approve:  python cli.py approve {proposal['id']}")
-        print(f"To reject:   python cli.py reject {proposal['id']}")
+        print(f"\nTo approve:  python cli.py approve {args.proposal_id}")
+        print(f"To reject:   python cli.py reject {args.proposal_id}")
 
 
 async def cmd_approve(args):
     """Approve a pending tool proposal."""
     client = await get_client()
-    handle = client.get_workflow_handle("tool-registry")
+    handle = client.get_workflow_handle(f"tool-proposal-{args.proposal_id}")
 
-    # First, review what we're approving
-    proposal = await handle.query("get_proposal", args.proposal_id)
-    if not proposal:
+    try:
+        status = await handle.query("get_status")
+    except Exception:
         print(f"Proposal '{args.proposal_id}' not found.")
         sys.exit(1)
 
-    if proposal["status"] != "pending":
-        print(f"Proposal is '{proposal['status']}', not pending.")
+    if status["status"] != "pending":
+        print(f"Proposal is '{status['status']}', not pending.")
         sys.exit(1)
 
-    # Show a summary and confirm
+    proposal = status["proposal"]
     print(f"\nApproving: {proposal['name']}")
     print(f"  {proposal['description']}")
 
@@ -123,16 +142,15 @@ async def cmd_approve(args):
             print("Cancelled.")
             return
 
-    # Signal the registry — it handles writing the tool and installing deps via activity
-    await handle.signal("approve_tool", args.proposal_id)
-    print(f"Tool '{proposal['name']}' approved. The registry workflow will write the tool and install dependencies.")
+    await handle.signal("approve", "cli-user")
+    print(f"Tool '{proposal['name']}' approved.")
 
 
 async def cmd_reject(args):
     """Reject a pending tool proposal."""
     client = await get_client()
-    handle = client.get_workflow_handle("tool-registry")
-    await handle.signal("reject_tool", args.proposal_id)
+    handle = client.get_workflow_handle(f"tool-proposal-{args.proposal_id}")
+    await handle.signal("reject", "cli-user")
     print(f"Proposal '{args.proposal_id}' rejected.")
 
 

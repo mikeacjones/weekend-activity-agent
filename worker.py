@@ -14,6 +14,7 @@ from activities import (
     call_llm,
     call_llm_simple,
     compile_report,
+    discuss_tool_proposal,
     execute_tool,
     get_current_weather_summary,
     notify_tool_proposal,
@@ -22,7 +23,9 @@ from activities import (
 )
 from workflows import (
     AgenticResearchWorkflow,
+    ConversationWorkflow,
     SlackInteractionWorkflow,
+    ToolProposalWorkflow,
     ToolRegistryWorkflow,
     WeeklyResearchWorkflow,
 )
@@ -48,16 +51,19 @@ async def main():
             WeeklyResearchWorkflow,
             AgenticResearchWorkflow,
             ToolRegistryWorkflow,
+            ToolProposalWorkflow,
+            ConversationWorkflow,
             SlackInteractionWorkflow,
         ],
         activities=[
             call_llm,
             call_llm_simple,
-            execute_tool,
             compile_report,
-            send_slack_message,
-            notify_tool_proposal,
+            discuss_tool_proposal,
+            execute_tool,
             get_current_weather_summary,
+            notify_tool_proposal,
+            send_slack_message,
             write_dynamic_tool,
         ],
     )

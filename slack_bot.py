@@ -4,8 +4,10 @@ Slack Socket Mode listener — translates Slack interactions into Temporal signa
 Not a standalone process. Started by the worker alongside the Temporal polling loop.
 The listener's only job is to receive Slack events and route them into the Temporal system:
 
-- Tool approval/rejection → signals to ToolRegistryWorkflow
-- "More info" requests → starts a HandleSlackInteraction workflow
+- @mention → starts a ConversationWorkflow
+- Thread replies → signals to ConversationWorkflow or ToolProposalWorkflow
+- Tool approval/rejection → signals to ToolProposalWorkflow
+- "More info" requests → starts a SlackInteractionWorkflow
 - Simple reactions (interested/dismiss) → fires a one-shot activity
 
 This keeps all execution durable and visible in the Temporal UI.
@@ -24,8 +26,12 @@ def create_slack_app(temporal_client: Client) -> App:
     """Create and configure the Slack app with all action handlers."""
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
+    # Get the bot's own user ID to filter self-mentions in threads
+    auth = app.client.auth_test()
+    bot_user_id = auth["user_id"]
+
     # -----------------------------------------------------------------
-    # Tool proposal actions → Temporal signals
+    # Tool proposal actions → Temporal signals to child workflows
     # -----------------------------------------------------------------
 
     @app.action(re.compile(r"^approve_tool:"))
@@ -36,32 +42,24 @@ def create_slack_app(temporal_client: Client) -> App:
 
         import asyncio
         async def _approve():
-            handle = temporal_client.get_workflow_handle("tool-registry")
-            proposal = await handle.query("get_proposal", proposal_id)
+            handle = temporal_client.get_workflow_handle(f"tool-proposal-{proposal_id}")
+            status = await handle.query("get_status")
 
-            if not proposal:
+            if status["status"] != "pending":
                 client.chat_postMessage(
                     channel=body["channel"]["id"],
                     thread_ts=body["message"]["ts"],
-                    text=f"Proposal `{proposal_id}` not found.",
+                    text=f"Proposal is already `{status['status']}`.",
                 )
                 return
 
-            if proposal["status"] != "pending":
-                client.chat_postMessage(
-                    channel=body["channel"]["id"],
-                    thread_ts=body["message"]["ts"],
-                    text=f"Proposal is already `{proposal['status']}`.",
-                )
-                return
-
-            await handle.signal("approve_tool", proposal_id)
+            await handle.signal("approve", user)
 
             client.chat_postMessage(
                 channel=body["channel"]["id"],
                 thread_ts=body["message"]["ts"],
                 text=(
-                    f":white_check_mark: *{user}* approved `{proposal['name']}`.\n"
+                    f":white_check_mark: *{user}* approved `{status['proposal']['name']}`.\n"
                     f"It will be available on the next research run."
                 ),
             )
@@ -76,8 +74,8 @@ def create_slack_app(temporal_client: Client) -> App:
 
         import asyncio
         async def _reject():
-            handle = temporal_client.get_workflow_handle("tool-registry")
-            await handle.signal("reject_tool", proposal_id)
+            handle = temporal_client.get_workflow_handle(f"tool-proposal-{proposal_id}")
+            await handle.signal("reject", user)
 
         asyncio.run(_reject())
 
@@ -94,8 +92,8 @@ def create_slack_app(temporal_client: Client) -> App:
 
         import asyncio
         async def _review():
-            handle = temporal_client.get_workflow_handle("tool-registry")
-            return await handle.query("get_proposal", proposal_id)
+            handle = temporal_client.get_workflow_handle(f"tool-proposal-{proposal_id}")
+            return await handle.query("get_proposal")
 
         proposal = asyncio.run(_review())
 
@@ -113,6 +111,115 @@ def create_slack_app(temporal_client: Client) -> App:
             thread_ts=body["message"]["ts"],
             text=text,
         )
+
+    # -----------------------------------------------------------------
+    # @mention → start a conversation workflow
+    # -----------------------------------------------------------------
+
+    @app.event("app_mention")
+    def handle_app_mention(event, client):
+        channel = event["channel"]
+        thread_ts = event.get("thread_ts")
+        event_ts = event["ts"]
+        user = event.get("user", "unknown")
+
+        # Strip the bot mention from the message text
+        text = re.sub(rf"<@{bot_user_id}>\s*", "", event.get("text", "")).strip()
+        if not text:
+            text = "Hey! What can you help me with?"
+
+        # If mentioned in an existing thread, route to that conversation
+        if thread_ts:
+            import asyncio
+            async def _signal():
+                handle = temporal_client.get_workflow_handle(f"conversation-{thread_ts}")
+                await handle.signal("message", {"user": user, "text": text})
+            try:
+                asyncio.run(_signal())
+            except Exception:
+                pass
+            return
+
+        # Start a new conversation workflow — the mention message is the thread anchor
+        import asyncio
+        from workflows.conversation import ConversationWorkflow
+
+        async def _start():
+            await temporal_client.start_workflow(
+                ConversationWorkflow.run,
+                args=[channel, event_ts, text],
+                id=f"conversation-{event_ts}",
+                task_queue="weekend-activity-agent",
+            )
+
+        asyncio.run(_start())
+
+    # -----------------------------------------------------------------
+    # Thread replies → route to conversation or proposal workflows
+    # -----------------------------------------------------------------
+
+    @app.event("message")
+    def handle_thread_reply(event, client):
+        # Only process threaded replies
+        thread_ts = event.get("thread_ts")
+        if not thread_ts:
+            return
+
+        # Skip bot messages to avoid loops
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            return
+
+        channel = event["channel"]
+        user = event.get("user", "unknown")
+        text = event.get("text", "")
+
+        # Fetch the parent message to determine thread type
+        parent = client.conversations_history(
+            channel=channel,
+            latest=thread_ts,
+            inclusive=True,
+            limit=1,
+        )
+        if not parent["messages"]:
+            return
+
+        parent_msg = parent["messages"][0]
+        parent_text = parent_msg.get("text", "")
+
+        import asyncio
+
+        # Tool proposal thread
+        if "New tool proposal:" in parent_text:
+            proposal_id = None
+            for block in parent_msg.get("blocks", []):
+                if block.get("type") == "context":
+                    for el in block.get("elements", []):
+                        match = re.search(r"Proposal ID: `([^`]+)`", el.get("text", ""))
+                        if match:
+                            proposal_id = match.group(1)
+                            break
+                if proposal_id:
+                    break
+
+            if proposal_id:
+                async def _discuss_proposal():
+                    handle = temporal_client.get_workflow_handle(f"tool-proposal-{proposal_id}")
+                    await handle.signal("discuss", {"user": user, "text": text})
+                try:
+                    asyncio.run(_discuss_proposal())
+                except Exception:
+                    pass
+            return
+
+        # Conversation thread (bot was mentioned in the parent)
+        if f"<@{bot_user_id}>" in parent_text:
+            async def _discuss_conversation():
+                handle = temporal_client.get_workflow_handle(f"conversation-{thread_ts}")
+                await handle.signal("message", {"user": user, "text": text})
+            try:
+                asyncio.run(_discuss_conversation())
+            except Exception:
+                pass
 
     # -----------------------------------------------------------------
     # Report interactions → Temporal activities/workflows
