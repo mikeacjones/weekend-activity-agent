@@ -3,6 +3,7 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 
@@ -191,6 +192,49 @@ TOOL_DEFINITIONS = [
     },
 ]
 
+MEMORY_TOOLS = [
+    {
+        "name": "save_memory",
+        "description": (
+            "Save something to persistent memory for future reference. Use this "
+            "when the user asks you to remember something, gives you feedback or "
+            "preferences, or when you learn something worth retaining. Memories "
+            "persist across conversations."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Short identifier for this memory (e.g., 'user_dislikes_crowds')",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The information to remember",
+                },
+            },
+            "required": ["key", "content"],
+        },
+    },
+    {
+        "name": "recall_memories",
+        "description": (
+            "Search persistent memory for previously saved information. Use this "
+            "to recall user preferences, past feedback, or any stored context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to search for (searches keys and content)",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Tool implementations
@@ -286,6 +330,54 @@ async def get_weather_forecast(lat: float = 33.749, lon: float = -84.358) -> str
     return "\n\n".join(lines)
 
 
+MEMORIES_DIR = Path(__file__).parent / "memories"
+
+
+async def save_memory(key: str, content: str) -> str:
+    """Save a memory entry to disk."""
+    MEMORIES_DIR.mkdir(exist_ok=True)
+    memory = {
+        "key": key,
+        "content": content,
+        "saved_at": datetime.now().isoformat(),
+    }
+    filepath = MEMORIES_DIR / f"{key}.json"
+    filepath.write_text(json.dumps(memory, indent=2))
+    return f"Memory saved: {key}"
+
+
+async def recall_memories(query: str) -> str:
+    """Search saved memories by key and content."""
+    if not MEMORIES_DIR.exists():
+        return "No memories saved yet."
+
+    query_lower = query.lower()
+    matches = []
+    for filepath in MEMORIES_DIR.glob("*.json"):
+        try:
+            memory = json.loads(filepath.read_text())
+            if (query_lower in memory.get("key", "").lower() or
+                    query_lower in memory.get("content", "").lower()):
+                matches.append(f"[{memory['key']}] {memory['content']}")
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    if not matches:
+        # Return all memories if no specific match
+        all_memories = []
+        for filepath in sorted(MEMORIES_DIR.glob("*.json")):
+            try:
+                memory = json.loads(filepath.read_text())
+                all_memories.append(f"[{memory['key']}] {memory['content']}")
+            except (json.JSONDecodeError, KeyError):
+                continue
+        if all_memories:
+            return "No exact matches. All saved memories:\n" + "\n".join(all_memories)
+        return "No memories saved yet."
+
+    return "\n".join(matches)
+
+
 async def dispatch_tool(name: str, tool_input: dict) -> str:
     """Dispatch a tool call. Async — runs inside Temporal's event loop."""
     match name:
@@ -310,6 +402,12 @@ async def dispatch_tool(name: str, tool_input: dict) -> str:
 
         case "propose_new_tool":
             return "Tool proposal submitted for review. Continuing with existing tools."
+
+        case "save_memory":
+            return await save_memory(tool_input["key"], tool_input["content"])
+
+        case "recall_memories":
+            return await recall_memories(tool_input["query"])
 
         case _:
             return await _dispatch_dynamic_tool(name, tool_input)
