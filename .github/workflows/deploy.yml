@@ -29,12 +29,14 @@ jobs:
             "SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }}" \
             "SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }}" \
             "SLACK_CHANNEL_ID=${{ secrets.SLACK_CHANNEL_ID }}" \
+            "EVENTBRITE_TOKEN=${{ secrets.EVENTBRITE_TOKEN }}" \
+            "SECRETS_MASTER_KEY=${{ secrets.SECRETS_MASTER_KEY }}" \
             "TEMPORAL_ADDRESS=temporal:7233" \
             "TEMPORAL_NAMESPACE=weekend-activity-agent" \
             > .env
 
       - name: Ensure persistent directories exist
-        run: mkdir -p dynamic_tools memories
+        run: mkdir -p dynamic_tools memories secrets
 
       - name: Build and deploy
         run: |

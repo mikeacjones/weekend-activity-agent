@@ -7,3 +7,5 @@ dynamic_tools/*.py
 dynamic_tools/requirements.txt
 memories/*.json
 !memories/.gitkeep
+secrets/*.enc
+!secrets/.gitkeep

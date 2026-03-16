@@ -6,6 +6,7 @@ services:
     volumes:
       - ./dynamic_tools:/app/dynamic_tools
       - ./memories:/app/memories
+      - ./secrets:/app/secrets
     networks:
       - temporal-network
     restart: unless-stopped
@@ -18,6 +19,7 @@ services:
     volumes:
       - ./dynamic_tools:/app/dynamic_tools
       - ./memories:/app/memories
+      - ./secrets:/app/secrets
     networks:
       - temporal-network
     entrypoint: ["/app/entrypoint.sh", "cli"]
