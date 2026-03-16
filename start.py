@@ -33,14 +33,19 @@ async def main():
             raise
 
     # Start the weekly research cycle
-    handle = await client.start_workflow(
-        WeeklyResearchWorkflow.run,
-        args=["Reynoldstown, Atlanta, GA", slack_channel],
-        id="weekly-events-reynoldstown",
-        task_queue=TASK_QUEUE,
-    )
-    print(f"Started WeeklyResearchWorkflow (id: {handle.id})")
-    print("The agent will begin researching on the next Monday at 8:00 AM.")
+    try:
+        handle = await client.start_workflow(
+            WeeklyResearchWorkflow.run,
+            args=["Reynoldstown, Atlanta, GA", slack_channel],
+            id="weekly-events-reynoldstown",
+            task_queue=TASK_QUEUE,
+        )
+        print(f"Started WeeklyResearchWorkflow (id: {handle.id})")
+    except Exception as e:
+        if "already started" in str(e).lower() or "already running" in str(e).lower():
+            print("WeeklyResearchWorkflow already running.")
+        else:
+            raise
 
 
 def main_sync():

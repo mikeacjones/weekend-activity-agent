@@ -5,6 +5,9 @@ Mon-Thu: spawns a child AgenticResearchWorkflow per day (each with a different f
 Thu/Fri: compiles accumulated findings into a report, sends it to Slack
 Weekend: sleeps
 Monday: continue_as_new — starts a fresh week with clean history
+
+Day-aware: if started mid-week, picks up from the current day.
+If started on a weekend, sleeps until Monday.
 """
 
 from datetime import timedelta
@@ -28,7 +31,13 @@ RETRY = RetryPolicy(
     backoff_coefficient=2.0,
 )
 
-RESEARCH_SCHEDULE = ["Monday", "Tuesday", "Wednesday", "Thursday"]
+# Monday=0 through Thursday=3
+RESEARCH_DAYS = {
+    0: "Monday",
+    1: "Tuesday",
+    2: "Wednesday",
+    3: "Thursday",
+}
 
 
 @workflow.defn
@@ -50,31 +59,44 @@ class WeeklyResearchWorkflow:
     async def run(self, location_area: str, slack_channel: str):
         self.findings = []
 
-        for i, day in enumerate(RESEARCH_SCHEDULE):
+        now = workflow.now()
+        today = now.weekday()  # 0=Mon, 6=Sun
+
+        # If it's Friday-Sunday, sleep until Monday
+        if today > 3:
+            self.status = "sleeping until Monday"
+            await self._sleep_until_next_monday()
+            workflow.continue_as_new(args=[location_area, slack_channel])
+            return
+
+        # Build the remaining schedule from today onward
+        remaining = [
+            (day_num, day_name)
+            for day_num, day_name in sorted(RESEARCH_DAYS.items())
+            if day_num >= today
+        ]
+
+        for i, (day_num, day_name) in enumerate(remaining):
             if i > 0:
-                # Durable timer — survives worker restarts, deploys, reboot
-                self.status = f"sleeping until {day}"
+                self.status = f"sleeping until {day_name}"
                 await self._sleep_until_next_morning()
 
-            self.status = f"researching ({day})"
-            workflow.logger.info(f"Starting {day} research for {location_area}")
+            self.status = f"researching ({day_name})"
+            workflow.logger.info(f"Starting {day_name} research for {location_area}")
 
-            focus = DAILY_RESEARCH_FOCUS[day]
+            focus = DAILY_RESEARCH_FOCUS[day_name]
 
-            # Spawn daily research as a child workflow — isolated history.
-            # Each day's agentic loop can generate many events; keeping it
-            # in a child prevents the parent's history from bloating.
             daily = await workflow.execute_child_workflow(
                 AgenticResearchWorkflow.run,
-                args=[location_area, day, focus],
-                id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day.lower()}",
+                args=[location_area, day_name, focus],
+                id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day_name.lower()}",
                 execution_timeout=timedelta(hours=2),
                 retry_policy=RETRY,
             )
             self.findings.extend(daily)
 
             workflow.logger.info(
-                f"{day} complete: {len(daily)} new findings, "
+                f"{day_name} complete: {len(daily)} new findings, "
                 f"{len(self.findings)} total"
             )
 
@@ -87,7 +109,6 @@ class WeeklyResearchWorkflow:
             retry_policy=RETRY,
         )
 
-        # compile_report returns {"blocks": [...], "text": "..."}
         report = await workflow.execute_activity(
             compile_report,
             args=[self.findings, weather],
@@ -105,7 +126,6 @@ class WeeklyResearchWorkflow:
         self.status = "report sent, sleeping until next week"
         workflow.logger.info(f"Weekly report sent. {len(self.findings)} findings.")
 
-        # Sleep until next Monday, then start fresh.
         await self._sleep_until_next_monday()
         workflow.continue_as_new(args=[location_area, slack_channel])
 
