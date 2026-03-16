@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -42,6 +43,7 @@ async def main():
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
+        activity_executor=ThreadPoolExecutor(max_workers=100),
         workflows=[
             WeeklyResearchWorkflow,
             AgenticResearchWorkflow,
