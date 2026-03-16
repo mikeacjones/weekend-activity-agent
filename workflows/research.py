@@ -17,7 +17,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, notify_tool_proposal
+    from activities import call_llm, execute_tool
     from config import Location, Preferences, build_system_prompt
     from tools import TOOL_DEFINITIONS
 
@@ -124,24 +124,16 @@ class AgenticResearchWorkflow:
         return self.findings
 
     async def _handle_tool_proposal(self, tool_call: dict):
-        """Signal the ToolRegistryWorkflow and notify the user. Non-blocking."""
+        """Signal the ToolRegistryWorkflow. The registry spawns a child workflow
+        that handles Slack notification and discussion."""
         proposal = {
             "id": str(workflow.uuid4())[:8],
             "proposed_at": workflow.now().isoformat(),
             **tool_call["input"],
         }
 
-        # Signal the long-running tool registry workflow
         registry_handle = workflow.get_external_workflow_handle("tool-registry")
         await registry_handle.signal("propose_tool", proposal)
-
-        # Notify the user on Slack
-        await workflow.execute_activity(
-            notify_tool_proposal,
-            args=[proposal],
-            start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=RETRY,
-        )
 
     async def _get_dynamic_tools(self) -> list[dict]:
         """Query the ToolRegistryWorkflow for any approved dynamic tools."""
