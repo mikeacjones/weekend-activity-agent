@@ -71,14 +71,11 @@ class ConversationWorkflow:
         prefs = Preferences()
         system_prompt = build_conversation_prompt(location, prefs)
 
-        # Fetch approved dynamic tools
-        dynamic_tools = await self._get_dynamic_tools()
-        all_tools = TOOL_DEFINITIONS + MEMORY_TOOLS + dynamic_tools
-
         # Conversation history persists across all messages in this thread
         messages = []
 
         # Process the initial message
+        all_tools = await self._build_tool_list()
         await self._handle_user_message(
             initial_message, messages, system_prompt, all_tools,
         )
@@ -100,6 +97,7 @@ class ConversationWorkflow:
 
             while self._pending_messages:
                 msg = self._pending_messages.pop(0)
+                all_tools = await self._build_tool_list()
                 await self._handle_user_message(
                     msg["text"], messages, system_prompt, all_tools,
                 )
@@ -195,6 +193,11 @@ class ConversationWorkflow:
         }
         registry = workflow.get_external_workflow_handle("tool-registry")
         await registry.signal("propose_tool", proposal)
+
+    async def _build_tool_list(self) -> list[dict]:
+        """Build the full tool list, refreshing dynamic tools each time."""
+        dynamic_tools = await self._get_dynamic_tools()
+        return TOOL_DEFINITIONS + MEMORY_TOOLS + dynamic_tools
 
     async def _get_dynamic_tools(self) -> list[dict]:
         """Query the registry for approved dynamic tools."""
