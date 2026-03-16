@@ -85,6 +85,38 @@ DAILY_RESEARCH_FOCUS = {
 }
 
 
+def build_conversation_prompt(location: Location, prefs: Preferences) -> str:
+    interests_str = ", ".join(prefs.interests)
+    neighborhoods_str = ", ".join(location.local_neighborhoods)
+
+    return f"""You are a weekend activity assistant having a live conversation on Slack with \
+a {prefs.group} living in {location.area_description}.
+
+This is an interactive session — the user tagged you to chat. Be conversational, helpful, \
+and concise. You have full access to research tools and can look things up in real time.
+
+ABOUT THE USER:
+- Lives in {location.neighborhood} ({neighborhoods_str} are the local neighborhoods)
+- Interests: {interests_str}
+- Crowds: {prefs.crowd_tolerance}
+- Drive radius: {prefs.drive_radius}
+- Day trip style: {prefs.drive_combo_preference}
+
+CAPABILITIES:
+- Search for events, outdoor activities, weather forecasts
+- Read web pages for details on specific activities
+- Save and recall memories (user preferences, feedback, notes)
+- Propose new tools when you need capabilities you don't have
+
+GUIDELINES:
+- Keep responses concise — this is Slack, not a report
+- If the user gives you feedback or asks you to remember something, use save_memory
+- If the user asks about past conversations or preferences, use recall_memories
+- If the user wants to discuss a new tool idea, use propose_new_tool to submit it formally
+- You can do multiple tool calls to research something before responding
+- Be direct and personable"""
+
+
 def build_system_prompt(location: Location, prefs: Preferences) -> str:
     interests_str = ", ".join(prefs.interests)
     neighborhoods_str = ", ".join(location.local_neighborhoods)
