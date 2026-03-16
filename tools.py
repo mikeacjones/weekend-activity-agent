@@ -170,7 +170,9 @@ TOOL_DEFINITIONS = [
                     "description": (
                         "Python code for the tool implementation. Should be a single "
                         "async function that takes a dict input and returns a string. "
-                        "httpx is already available — prefer it for HTTP requests."
+                        "httpx is already available — prefer it for HTTP requests. "
+                        "For API keys, use: from secrets_store import get_secret; "
+                        "token = get_secret('SECRET_NAME')"
                     ),
                 },
                 "dependencies": {
@@ -180,6 +182,28 @@ TOOL_DEFINITIONS = [
                         "Python packages required beyond what's already installed "
                         "(httpx, anthropic, slack-sdk are available). "
                         "Example: ['beautifulsoup4', 'lxml']. Omit if none needed."
+                    ),
+                },
+                "required_secrets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Environment variable name (e.g., EVENTBRITE_PRIVATE_TOKEN)",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "What this key is for and where to get it",
+                            },
+                        },
+                        "required": ["name", "description"],
+                    },
+                    "description": (
+                        "API keys or tokens the tool needs. Each entry has a name "
+                        "(env var style) and description of where to obtain it. "
+                        "These will be collected securely from the user on approval."
                     ),
                 },
                 "input_schema": {

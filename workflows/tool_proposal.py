@@ -5,6 +5,7 @@ Each proposal is its own long-running workflow that:
 - Posts the proposal to Slack
 - Handles threaded discussion via signals
 - Processes approve/reject decisions
+- Collects required secrets via Slack modal on approval
 - Auto-expires after 15 days with a notification
 """
 
@@ -18,6 +19,7 @@ with workflow.unsafe.imports_passed_through():
     from activities import (
         discuss_tool_proposal,
         notify_tool_proposal,
+        save_tool_secrets,
         send_slack_message,
         write_dynamic_tool,
     )
@@ -42,7 +44,9 @@ class ToolProposalWorkflow:
         self.thread_ts: str = ""
         self.channel: str = ""
         self._pending_messages: list[dict] = []
+        self._pending_secrets: dict[str, str] | None = None
         self._resolved: bool = False
+        self._secrets_received: bool = False
 
     @workflow.signal
     async def discuss(self, message: dict):
@@ -50,8 +54,22 @@ class ToolProposalWorkflow:
 
     @workflow.signal
     async def approve(self, user: str):
-        self.status = "approved"
-        self._resolved = True
+        # If the tool needs secrets, defer full approval until they're provided
+        required = self.proposal.get("required_secrets", [])
+        if required and not self._secrets_received:
+            self.status = "awaiting_secrets"
+        else:
+            self.status = "approved"
+            self._resolved = True
+
+    @workflow.signal
+    async def provide_secrets(self, secrets: dict):
+        self._pending_secrets = secrets
+        self._secrets_received = True
+        # If we were waiting for secrets, now we can fully approve
+        if self.status == "awaiting_secrets":
+            self.status = "approved"
+            self._resolved = True
 
     @workflow.signal
     async def reject(self, user: str):
@@ -128,6 +146,15 @@ class ToolProposalWorkflow:
 
         # Handle the resolution
         if self.status == "approved":
+            # Save any secrets that were provided
+            if self._pending_secrets:
+                await workflow.execute_activity(
+                    save_tool_secrets,
+                    args=[self._pending_secrets],
+                    start_to_close_timeout=timedelta(minutes=1),
+                    retry_policy=RETRY,
+                )
+
             await workflow.execute_activity(
                 write_dynamic_tool,
                 args=[self.proposal],
@@ -149,7 +176,6 @@ class ToolProposalWorkflow:
             workflow.logger.info(f"Tool '{self.proposal['name']}' approved and written")
 
         elif not self._resolved:
-            # TTL expired — notify and close
             self.status = "expired"
             await workflow.execute_activity(
                 send_slack_message,

@@ -236,8 +236,13 @@ def notify_tool_proposal(proposal: dict):
                     "type": "mrkdwn",
                     "text": (
                         f"Proposal ID: `{proposal_id}` | "
-                        f"Review code: `python cli.py review {proposal_id}` | "
                         f"Auto-expires in 15 days"
+                        + (
+                            " | :key: Requires API keys: "
+                            + ", ".join(f"`{s['name']}`" for s in proposal.get("required_secrets", []))
+                            if proposal.get("required_secrets")
+                            else ""
+                        )
                     ),
                 },
             ],
@@ -306,6 +311,15 @@ def write_dynamic_tool(proposal: dict):
 
 
 @activity.defn
+def save_tool_secrets(secrets: dict[str, str]):
+    """Encrypt and save secrets provided via Slack modal."""
+    activity.heartbeat("Saving secrets")
+    from secrets_store import save_secret
+    for name, value in secrets.items():
+        save_secret(name, value)
+
+
+@activity.defn
 def discuss_tool_proposal(
     proposal: dict,
     discussion_history: list[dict],
@@ -323,11 +337,17 @@ def discuss_tool_proposal(
         "You are reviewing a tool proposal for an automated weekend activity research agent. "
         "Help the user understand the tool, answer questions about the implementation, "
         "and flag any concerns about security, reliability, or dependencies.\n\n"
+        "IMPORTANT: You are responding in Slack. Use Slack mrkdwn formatting:\n"
+        "- Bold: *bold* (single asterisks, NOT **double**)\n"
+        "- Italic: _italic_ (NOT *single*)\n"
+        "- Links: <https://example.com|link text> (NOT [text](url))\n"
+        "- Code: `inline` or ```block```\n"
+        "- Never use **double asterisks** or [markdown links](url)\n\n"
         f"TOOL NAME: {proposal['name']}\n"
         f"DESCRIPTION: {proposal['description']}\n"
         f"RATIONALE: {proposal.get('rationale', 'N/A')}\n"
         f"DEPENDENCIES: {', '.join(deps) if deps else 'None'}\n"
-        f"IMPLEMENTATION:\n```python\n{code}\n```"
+        f"IMPLEMENTATION:\n```\n{code}\n```"
     )
 
     messages = []
