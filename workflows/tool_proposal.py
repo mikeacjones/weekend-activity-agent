@@ -42,12 +42,10 @@ class ToolProposalWorkflow:
         self.channel: str = ""
         self._pending_messages: list[dict] = []
         self._resolved: bool = False
-        self._has_discussion: bool = False
 
     @workflow.signal
     async def discuss(self, message: dict):
         self._pending_messages.append(message)
-        self._has_discussion = True
 
     @workflow.signal
     async def approve(self, user: str):
@@ -99,7 +97,7 @@ class ToolProposalWorkflow:
                 break
 
             timed_out = not await workflow.wait_condition(
-                lambda: self._resolved or self._has_discussion,
+                lambda: self._resolved or bool(self._pending_messages),
                 timeout=remaining,
             )
 
@@ -126,8 +124,6 @@ class ToolProposalWorkflow:
                     "user_message": msg["text"],
                     "response": response,
                 })
-
-            self._has_discussion = False
 
         # Handle the resolution
         if self.status == "approved":

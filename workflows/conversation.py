@@ -3,6 +3,7 @@ Child workflow: interactive Slack conversation triggered by @mentioning the bot.
 
 Each conversation is its own workflow that:
 - Runs an agentic loop (LLM + tools) for each user message
+- Posts LLM text and tool call indicators to the Slack thread in real time
 - Waits for follow-up messages via signals
 - Closes after 2 days of inactivity with a notification
 """
@@ -13,7 +14,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, notify_tool_proposal, send_slack_message
+    from activities import call_llm, execute_tool, send_slack_message
     from config import Location, Preferences, build_conversation_prompt
     from tools import TOOL_DEFINITIONS, MEMORY_TOOLS
 
@@ -26,6 +27,17 @@ RETRY = RetryPolicy(
 MAX_ITERATIONS = 15  # per user message
 INACTIVITY_TTL = timedelta(days=2)
 
+TOOL_LABELS = {
+    "search_events": ":calendar: Searching for events",
+    "search_outdoors": ":national_park: Searching outdoor activities",
+    "get_weather": ":partly_sunny: Checking the weather",
+    "read_page": ":globe_with_meridians: Reading page",
+    "save_recommendation": ":pushpin: Saving recommendation",
+    "save_memory": ":brain: Saving to memory",
+    "recall_memories": ":brain: Checking memory",
+    "propose_new_tool": ":hammer_and_wrench: Submitting tool proposal",
+}
+
 
 @workflow.defn
 class ConversationWorkflow:
@@ -35,13 +47,11 @@ class ConversationWorkflow:
         self.channel: str = ""
         self.thread_ts: str = ""
         self._pending_messages: list[dict] = []
-        self._has_message: bool = False
         self._closed: bool = False
 
     @workflow.signal
     async def message(self, msg: dict):
         self._pending_messages.append(msg)
-        self._has_message = True
 
     @workflow.query
     def get_status(self) -> dict:
@@ -74,15 +84,14 @@ class ConversationWorkflow:
 
         # Wait for follow-up messages with inactivity TTL
         while not self._closed:
-            self._has_message = False
-
+            # Check pending_messages directly — avoids race where a signal
+            # arrives during _handle_user_message and gets lost
             timed_out = not await workflow.wait_condition(
-                lambda: self._has_message,
+                lambda: bool(self._pending_messages),
                 timeout=INACTIVITY_TTL,
             )
 
             if timed_out:
-                # No activity for 2 days — close the thread
                 await self._post_to_thread(
                     ":wave: Closing this thread — no activity for 2 days. "
                     "Tag me again anytime to start a new conversation!"
@@ -120,22 +129,31 @@ class ConversationWorkflow:
                 retry_policy=RETRY,
             )
 
-            # Extract text response for Slack
+            # Post any text the LLM produced (even alongside tool calls)
+            text_parts = [
+                b["text"] for b in llm_response["raw_content"]
+                if b["type"] == "text" and b["text"].strip()
+            ]
+            if text_parts:
+                await self._post_to_thread("\n".join(text_parts))
+
+            # Done — no tool calls
             if llm_response["stop_reason"] == "end_turn":
-                text_parts = [
-                    b["text"] for b in llm_response["raw_content"]
-                    if b["type"] == "text"
-                ]
-                if text_parts:
-                    messages.append({
-                        "role": "assistant",
-                        "content": llm_response["raw_content"],
-                    })
-                    await self._post_to_thread("\n".join(text_parts))
+                messages.append({
+                    "role": "assistant",
+                    "content": llm_response["raw_content"],
+                })
                 break
 
-            # Process tool calls
+            # Show tool call indicators and execute
             tool_results = []
+            tool_names = [tc["name"] for tc in llm_response["tool_calls"]]
+            indicators = [
+                TOOL_LABELS.get(name, f":gear: Using {name}")
+                for name in tool_names
+            ]
+            await self._post_to_thread("_" + " · ".join(indicators) + "..._")
+
             for tool_call in llm_response["tool_calls"]:
                 if tool_call["name"] == "propose_new_tool":
                     await self._handle_tool_proposal(tool_call)

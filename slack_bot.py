@@ -207,8 +207,8 @@ def create_slack_app(temporal_client: Client) -> App:
                     await handle.signal("discuss", {"user": user, "text": text})
                 try:
                     asyncio.run(_discuss_proposal())
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Failed to signal tool-proposal-{proposal_id}: {e}")
             return
 
         # Conversation thread (bot was mentioned in the parent)
@@ -218,8 +218,8 @@ def create_slack_app(temporal_client: Client) -> App:
                 await handle.signal("message", {"user": user, "text": text})
             try:
                 asyncio.run(_discuss_conversation())
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to signal conversation-{thread_ts}: {e}")
 
     # -----------------------------------------------------------------
     # Report interactions → Temporal activities/workflows
