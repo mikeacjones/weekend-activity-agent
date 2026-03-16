@@ -15,7 +15,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, send_slack_message
+    from activities import call_llm, execute_tool, recover_approved_tools, send_slack_message
     from config import Location, Preferences, build_conversation_prompt
     from tools import TOOL_DEFINITIONS, MEMORY_TOOLS
 
@@ -200,21 +200,13 @@ class ConversationWorkflow:
         return TOOL_DEFINITIONS + MEMORY_TOOLS + dynamic_tools
 
     async def _get_dynamic_tools(self) -> list[dict]:
-        """Query the registry for approved dynamic tools."""
+        """Load approved dynamic tools from disk."""
         try:
-            registry = workflow.get_external_workflow_handle("tool-registry")
-            approved = await registry.query("get_approved_tools")
-            return [
-                {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "input_schema": t.get("input_schema", {
-                        "type": "object",
-                        "properties": {},
-                    }),
-                }
-                for t in approved
-            ]
+            return await workflow.execute_activity(
+                recover_approved_tools,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
         except Exception:
-            workflow.logger.warn("Could not query tool registry for conversation")
+            workflow.logger.warn("Could not load dynamic tools")
             return []

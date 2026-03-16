@@ -17,7 +17,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool
+    from activities import call_llm, execute_tool, recover_approved_tools
     from config import Location, Preferences, build_system_prompt
     from tools import TOOL_DEFINITIONS
 
@@ -136,23 +136,13 @@ class AgenticResearchWorkflow:
         await registry_handle.signal("propose_tool", proposal)
 
     async def _get_dynamic_tools(self) -> list[dict]:
-        """Query the ToolRegistryWorkflow for any approved dynamic tools."""
+        """Load approved dynamic tools from disk."""
         try:
-            registry_handle = workflow.get_external_workflow_handle("tool-registry")
-            approved = await registry_handle.query("get_approved_tools")
-            # Convert approved proposals into Claude tool definitions
-            return [
-                {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "input_schema": t.get("input_schema", {
-                        "type": "object",
-                        "properties": {},
-                    }),
-                }
-                for t in approved
-            ]
+            return await workflow.execute_activity(
+                recover_approved_tools,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
         except Exception:
-            # Registry not running yet, or no approved tools — fine, continue
-            workflow.logger.warn("Could not query tool registry, continuing with static tools")
+            workflow.logger.warn("Could not load dynamic tools")
             return []
