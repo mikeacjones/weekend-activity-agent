@@ -6,6 +6,7 @@ spawns those children and maintains the authoritative list of approved tools
 that the research workflow queries.
 """
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -55,10 +56,13 @@ class ToolRegistryWorkflow:
             cycles += 1
             self._has_updates = False
 
-            await workflow.wait_condition(
-                lambda: self._has_updates,
-                timeout=timedelta(days=1),
-            )
+            try:
+                await workflow.wait_condition(
+                    lambda: self._has_updates,
+                    timeout=timedelta(days=1),
+                )
+            except asyncio.TimeoutError:
+                continue
 
             # Spawn a child workflow for each new proposal
             while self._pending_proposals:
