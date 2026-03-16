@@ -290,6 +290,18 @@ def write_dynamic_tool(proposal: dict):
     tool_dir = Path(__file__).parent / "dynamic_tools"
     tool_dir.mkdir(exist_ok=True)
 
+    # Write metadata for registry recovery on restart
+    meta = {
+        "name": proposal["name"],
+        "description": proposal["description"],
+        "input_schema": proposal.get("input_schema", {
+            "type": "object",
+            "properties": {},
+        }),
+    }
+    meta_file = tool_dir / f"{proposal['name']}.json"
+    meta_file.write_text(json.dumps(meta, indent=2))
+
     code = proposal.get("suggested_implementation", "")
     if code:
         header = f'"""{proposal["description"]}"""\n\n'
@@ -308,6 +320,51 @@ def write_dynamic_tool(proposal: dict):
             existing = {line.strip() for line in req_file.read_text().splitlines() if line.strip()}
         existing.update(deps)
         req_file.write_text("\n".join(sorted(existing)) + "\n")
+
+
+@activity.defn
+def recover_approved_tools() -> list[dict]:
+    """Scan dynamic_tools/ for metadata files to rebuild the approved tools list."""
+    activity.heartbeat("Recovering tools from disk")
+    tool_dir = Path(__file__).parent / "dynamic_tools"
+    if not tool_dir.exists():
+        return []
+
+    tools = []
+    for meta_file in sorted(tool_dir.glob("*.json")):
+        try:
+            meta = json.loads(meta_file.read_text())
+            if meta.get("name"):
+                tools.append({
+                    "name": meta["name"],
+                    "description": meta.get("description", ""),
+                    "input_schema": meta.get("input_schema", {
+                        "type": "object",
+                        "properties": {},
+                    }),
+                })
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    # Also pick up .py files that don't have a metadata sidecar
+    for py_file in sorted(tool_dir.glob("*.py")):
+        name = py_file.stem
+        if name.startswith("_") or any(t["name"] == name for t in tools):
+            continue
+        # Extract description from module docstring
+        content = py_file.read_text()
+        desc = ""
+        if content.startswith('"""'):
+            end = content.find('"""', 3)
+            if end > 0:
+                desc = content[3:end].strip()
+        tools.append({
+            "name": name,
+            "description": desc or f"Dynamic tool: {name}",
+            "input_schema": {"type": "object", "properties": {}},
+        })
+
+    return tools
 
 
 @activity.defn

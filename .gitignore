@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 dynamic_tools/*.py
+dynamic_tools/*.json
 !dynamic_tools/.gitkeep
 dynamic_tools/requirements.txt
 memories/*.json

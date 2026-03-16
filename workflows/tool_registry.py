@@ -10,9 +10,19 @@ import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 
+with workflow.unsafe.imports_passed_through():
+    from activities import recover_approved_tools
+
 from .tool_proposal import ToolProposalWorkflow
+
+RETRY = RetryPolicy(
+    maximum_attempts=3,
+    initial_interval=timedelta(seconds=5),
+    backoff_coefficient=2.0,
+)
 
 
 @workflow.defn
@@ -50,6 +60,15 @@ class ToolRegistryWorkflow:
     async def run(self, carry_over: list[dict] | None = None):
         if carry_over:
             self.approved_tools = carry_over
+        else:
+            recovered = await workflow.execute_activity(
+                recover_approved_tools,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
+            if recovered:
+                self.approved_tools = recovered
+                workflow.logger.info(f"Recovered {len(recovered)} tools from disk")
 
         cycles = 0
         while cycles < 365:
