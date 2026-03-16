@@ -1,0 +1,7 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+dynamic_tools/*.py
+!dynamic_tools/.gitkeep
+dynamic_tools/requirements.txt
