@@ -18,6 +18,7 @@ from activities import (
     execute_tool,
     get_current_weather_summary,
     notify_tool_proposal,
+    save_tool_secrets,
     send_slack_message,
     write_dynamic_tool,
 )
@@ -63,6 +64,7 @@ async def main():
             execute_tool,
             get_current_weather_summary,
             notify_tool_proposal,
+            save_tool_secrets,
             send_slack_message,
             write_dynamic_tool,
         ],

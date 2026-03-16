@@ -39,6 +39,7 @@ def create_slack_app(temporal_client: Client) -> App:
         ack()
         proposal_id = action["value"]
         user = body["user"]["username"]
+        trigger_id = body["trigger_id"]
 
         import asyncio
         async def _approve():
@@ -53,16 +54,66 @@ def create_slack_app(temporal_client: Client) -> App:
                 )
                 return
 
-            await handle.signal("approve", user)
+            proposal = status["proposal"]
+            required_secrets = proposal.get("required_secrets", [])
 
-            client.chat_postMessage(
-                channel=body["channel"]["id"],
-                thread_ts=body["message"]["ts"],
-                text=(
-                    f":white_check_mark: *{user}* approved `{status['proposal']['name']}`.\n"
-                    f"It will be available on the next research run."
-                ),
-            )
+            if required_secrets:
+                # Open a modal to collect secrets before approving
+                blocks = []
+                for secret in required_secrets:
+                    blocks.append({
+                        "type": "input",
+                        "block_id": f"secret_{secret['name']}",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "value",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": secret.get("description", f"Enter {secret['name']}"),
+                            },
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": secret["name"],
+                        },
+                    })
+
+                client.views_open(
+                    trigger_id=trigger_id,
+                    view={
+                        "type": "modal",
+                        "callback_id": f"tool_secrets:{proposal_id}",
+                        "title": {"type": "plain_text", "text": "API Keys Required"},
+                        "submit": {"type": "plain_text", "text": "Save & Approve"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        f"*`{proposal['name']}`* needs the following "
+                                        f"API keys. These will be encrypted and stored securely."
+                                    ),
+                                },
+                            },
+                            {"type": "divider"},
+                            *blocks,
+                        ],
+                    },
+                )
+
+                # Signal approve (will move to awaiting_secrets state)
+                await handle.signal("approve", user)
+            else:
+                await handle.signal("approve", user)
+                client.chat_postMessage(
+                    channel=body["channel"]["id"],
+                    thread_ts=body["message"]["ts"],
+                    text=(
+                        f":white_check_mark: *{user}* approved `{proposal['name']}`.\n"
+                        f"It will be available on the next research run."
+                    ),
+                )
 
         asyncio.run(_approve())
 
@@ -84,6 +135,34 @@ def create_slack_app(temporal_client: Client) -> App:
             thread_ts=body["message"]["ts"],
             text=f":x: *{user}* rejected proposal `{proposal_id}`.",
         )
+
+    # -----------------------------------------------------------------
+    # Modal submission → save secrets and complete approval
+    # -----------------------------------------------------------------
+
+    @app.view(re.compile(r"^tool_secrets:"))
+    def handle_secrets_modal(ack, body, view):
+        ack()
+        callback_id = view["callback_id"]
+        proposal_id = callback_id.split(":", 1)[1]
+        user = body["user"]["username"]
+
+        # Extract secret values from the modal
+        secrets = {}
+        for block_id, block_data in view["state"]["values"].items():
+            if block_id.startswith("secret_"):
+                secret_name = block_id[len("secret_"):]
+                value = block_data["value"]["value"]
+                if value:
+                    secrets[secret_name] = value
+
+        # Signal the proposal workflow with the secrets
+        import asyncio
+        async def _provide():
+            handle = temporal_client.get_workflow_handle(f"tool-proposal-{proposal_id}")
+            await handle.signal("provide_secrets", secrets)
+
+        asyncio.run(_provide())
 
     @app.action(re.compile(r"^review_tool:"))
     def handle_review_tool(ack, body, client, action):
