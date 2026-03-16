@@ -8,6 +8,7 @@ Each proposal is its own long-running workflow that:
 - Auto-expires after 15 days with a notification
 """
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -96,13 +97,12 @@ class ToolProposalWorkflow:
             if remaining.total_seconds() <= 0:
                 break
 
-            await workflow.wait_condition(
-                lambda: self._resolved or bool(self._pending_messages),
-                timeout=remaining,
-            )
-
-            # Check actual state — don't rely on the return value
-            if not self._resolved and not self._pending_messages:
+            try:
+                await workflow.wait_condition(
+                    lambda: self._resolved or bool(self._pending_messages),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
                 break
 
             # Process any pending discussion messages

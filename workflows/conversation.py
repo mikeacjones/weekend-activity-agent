@@ -8,6 +8,7 @@ Each conversation is its own workflow that:
 - Closes after 2 days of inactivity with a notification
 """
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -84,14 +85,12 @@ class ConversationWorkflow:
 
         # Wait for follow-up messages with inactivity TTL
         while not self._closed:
-            await workflow.wait_condition(
-                lambda: bool(self._pending_messages),
-                timeout=INACTIVITY_TTL,
-            )
-
-            # Always check the queue directly — don't rely on the return value,
-            # which can be wrong after a code-change replay
-            if not self._pending_messages:
+            try:
+                await workflow.wait_condition(
+                    lambda: bool(self._pending_messages),
+                    timeout=INACTIVITY_TTL,
+                )
+            except asyncio.TimeoutError:
                 await self._post_to_thread(
                     ":wave: Closing this thread — no activity for 2 days. "
                     "Tag me again anytime to start a new conversation!"
