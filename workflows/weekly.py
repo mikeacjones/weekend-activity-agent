@@ -17,12 +17,12 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from activities import (
-        compile_report,
         get_current_weather_summary,
         send_slack_message,
     )
     from config import DAILY_RESEARCH_FOCUS
 
+from .compile_report import CompileReportWorkflow
 from .research import AgenticResearchWorkflow
 
 RETRY = RetryPolicy(
@@ -109,11 +109,11 @@ class WeeklyResearchWorkflow:
             retry_policy=RETRY,
         )
 
-        report = await workflow.execute_activity(
-            compile_report,
+        report = await workflow.execute_child_workflow(
+            CompileReportWorkflow.run,
             args=[self.findings, weather],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RETRY,
+            id=f"compile-report-{workflow.now().strftime('%Y-%m-%d')}",
+            execution_timeout=timedelta(minutes=10),
         )
 
         await workflow.execute_activity(

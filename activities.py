@@ -130,18 +130,12 @@ FORMATTING GUIDELINES:
 
 
 @activity.defn
-def compile_report(
-    findings: list[dict],
-    weather_summary: str,
-) -> dict:
-    """Synthesize the week's research into a Slack Block Kit report.
-
-    Returns {"blocks": [...], "text": "..."}.
-    """
-    activity.heartbeat("Compiling report")
+def call_llm_for_report(findings: list[dict], weather_summary: str) -> str:
+    """Call the LLM to generate the weekly Slack report. Returns raw response text."""
+    activity.heartbeat("Calling LLM for report")
     response = anthropic_client.messages.create(
         model=LLM_MODEL,
-        max_tokens=8192,
+        max_tokens=16000,
         system=REPORT_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
@@ -157,11 +151,25 @@ Produce the Slack Block Kit message. Return ONLY valid JSON, no markdown fences.
         }],
     )
 
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    if response.stop_reason == "max_tokens":
+        raise ValueError(
+            f"LLM response was truncated (max_tokens reached). "
+            f"Response was {len(response.content[0].text)} chars. "
+            "Increase max_tokens or reduce findings input."
+        )
 
-    report = json.loads(raw)
+    return response.content[0].text
+
+
+@activity.defn
+def parse_report(raw: str) -> dict:
+    """Parse and validate the LLM-generated Slack Block Kit JSON."""
+    activity.heartbeat("Parsing report")
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    report = json.loads(text)
 
     if "blocks" not in report or not isinstance(report["blocks"], list):
         raise ValueError("LLM response missing 'blocks' array")

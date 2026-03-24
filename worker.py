@@ -12,12 +12,13 @@ from temporalio.worker import Worker
 
 from activities import (
     call_llm,
+    call_llm_for_report,
     call_llm_simple,
-    compile_report,
     discuss_tool_proposal,
     execute_tool,
     get_current_weather_summary,
     notify_tool_proposal,
+    parse_report,
     recover_approved_tools,
     save_tool_secrets,
     send_slack_message,
@@ -25,6 +26,7 @@ from activities import (
 )
 from workflows import (
     AgenticResearchWorkflow,
+    CompileReportWorkflow,
     ConversationWorkflow,
     SlackInteractionWorkflow,
     ToolProposalWorkflow,
@@ -52,6 +54,7 @@ async def main():
         workflows=[
             WeeklyResearchWorkflow,
             AgenticResearchWorkflow,
+            CompileReportWorkflow,
             ToolRegistryWorkflow,
             ToolProposalWorkflow,
             ConversationWorkflow,
@@ -59,12 +62,13 @@ async def main():
         ],
         activities=[
             call_llm,
+            call_llm_for_report,
             call_llm_simple,
-            compile_report,
             discuss_tool_proposal,
             execute_tool,
             get_current_weather_summary,
             notify_tool_proposal,
+            parse_report,
             recover_approved_tools,
             save_tool_secrets,
             send_slack_message,
