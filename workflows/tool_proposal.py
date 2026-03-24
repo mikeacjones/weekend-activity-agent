@@ -19,6 +19,7 @@ with workflow.unsafe.imports_passed_through():
     from activities import (
         discuss_tool_proposal,
         notify_tool_proposal,
+        record_tool_rejection,
         save_tool_secrets,
         send_slack_message,
         write_dynamic_tool,
@@ -174,6 +175,16 @@ class ToolProposalWorkflow:
             await registry.signal("tool_approved", tool_def)
 
             workflow.logger.info(f"Tool '{self.proposal['name']}' approved and written")
+
+        elif self.status == "rejected":
+            await workflow.execute_activity(
+                record_tool_rejection,
+                args=[self.proposal],
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
+            registry = workflow.get_external_workflow_handle("tool-registry")
+            await registry.signal("tool_rejected", self.proposal["name"])
 
         elif not self._resolved:
             self.status = "expired"

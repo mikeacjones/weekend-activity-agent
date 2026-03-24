@@ -17,7 +17,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, recover_approved_tools
+    from activities import call_llm, execute_tool, recover_approved_tools, recover_rejected_tools
     from config import Location, Preferences, build_system_prompt
     from tools import TOOL_DEFINITIONS
 
@@ -37,6 +37,7 @@ class AgenticResearchWorkflow:
     def __init__(self):
         self.iteration: int = 0
         self.findings: list[dict] = []
+        self.rejected_tool_names: list[str] = []
 
     @workflow.query
     def get_progress(self) -> dict:
@@ -54,6 +55,15 @@ class AgenticResearchWorkflow:
         # Fetch any dynamically approved tools from the registry
         dynamic_tools = await self._get_dynamic_tools()
         all_tools = TOOL_DEFINITIONS + dynamic_tools
+
+        # Load rejected tools so the LLM knows not to re-propose them
+        self.rejected_tool_names = await self._get_rejected_tools()
+        if self.rejected_tool_names:
+            rejected_note = (
+                "\n\nPREVIOUSLY REJECTED TOOLS (do NOT propose these again): "
+                + ", ".join(self.rejected_tool_names)
+            )
+            system_prompt += rejected_note
 
         messages = [{
             "role": "user",
@@ -88,6 +98,17 @@ class AgenticResearchWorkflow:
             for tool_call in llm_response["tool_calls"]:
                 # Handle special tools that interact with workflows
                 if tool_call["name"] == "propose_new_tool":
+                    proposed_name = tool_call["input"].get("name", "")
+                    if proposed_name in self.rejected_tool_names:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_call["id"],
+                            "content": (
+                                f"Tool '{proposed_name}' was previously rejected by the user. "
+                                "Do not propose it again. Continue research with existing tools."
+                            ),
+                        })
+                        continue
                     await self._handle_tool_proposal(tool_call)
                     tool_results.append({
                         "type": "tool_result",
@@ -152,4 +173,16 @@ class AgenticResearchWorkflow:
             )
         except Exception:
             workflow.logger.warn("Could not load dynamic tools")
+            return []
+
+    async def _get_rejected_tools(self) -> list[str]:
+        """Load rejected tool names from disk."""
+        try:
+            return await workflow.execute_activity(
+                recover_rejected_tools,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
+        except Exception:
+            workflow.logger.warn("Could not load rejected tools")
             return []

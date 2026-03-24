@@ -14,7 +14,7 @@ from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import recover_approved_tools
+    from activities import recover_approved_tools, recover_rejected_tools
 
 from .tool_proposal import ToolProposalWorkflow
 
@@ -31,6 +31,7 @@ class ToolRegistryWorkflow:
 
     def __init__(self):
         self.approved_tools: list[dict] = []
+        self.rejected_tool_names: list[str] = []
         self._pending_proposals: list[dict] = []
         self._has_updates: bool = False
 
@@ -48,16 +49,30 @@ class ToolRegistryWorkflow:
         self._has_updates = True
         workflow.logger.info(f"Tool registered: {tool['name']}")
 
+    @workflow.signal
+    async def tool_rejected(self, tool_name: str):
+        if tool_name not in self.rejected_tool_names:
+            self.rejected_tool_names.append(tool_name)
+        workflow.logger.info(f"Tool rejected: {tool_name}")
+
     # --- Queries ---
 
     @workflow.query
     def get_approved_tools(self) -> list[dict]:
         return self.approved_tools
 
+    @workflow.query
+    def get_rejected_tools(self) -> list[str]:
+        return self.rejected_tool_names
+
     # --- Main loop ---
 
     @workflow.run
-    async def run(self, carry_over: list[dict] | None = None):
+    async def run(
+        self,
+        carry_over: list[dict] | None = None,
+        rejected_carry_over: list[str] | None = None,
+    ):
         if carry_over:
             self.approved_tools = carry_over
         else:
@@ -69,6 +84,18 @@ class ToolRegistryWorkflow:
             if recovered:
                 self.approved_tools = recovered
                 workflow.logger.info(f"Recovered {len(recovered)} tools from disk")
+
+        if rejected_carry_over:
+            self.rejected_tool_names = rejected_carry_over
+        else:
+            rejected = await workflow.execute_activity(
+                recover_rejected_tools,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
+            if rejected:
+                self.rejected_tool_names = rejected
+                workflow.logger.info(f"Recovered {len(rejected)} rejected tools from disk")
 
         cycles = 0
         while cycles < 365:
@@ -93,4 +120,4 @@ class ToolRegistryWorkflow:
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
 
-        workflow.continue_as_new(args=[self.approved_tools])
+        workflow.continue_as_new(args=[self.approved_tools, self.rejected_tool_names])

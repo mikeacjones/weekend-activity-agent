@@ -376,6 +376,44 @@ def recover_approved_tools() -> list[dict]:
 
 
 @activity.defn
+def record_tool_rejection(proposal: dict):
+    """Persist a rejected tool name to disk so the agent won't re-propose it."""
+    activity.heartbeat(f"Recording rejection: {proposal['name']}")
+    tool_dir = Path(__file__).parent / "dynamic_tools"
+    tool_dir.mkdir(exist_ok=True)
+    rejection_file = tool_dir / "rejected_tools.json"
+
+    existing: list[dict] = []
+    if rejection_file.exists():
+        try:
+            existing = json.loads(rejection_file.read_text())
+        except json.JSONDecodeError:
+            pass
+
+    if not any(r["name"] == proposal["name"] for r in existing):
+        existing.append({
+            "name": proposal["name"],
+            "description": proposal.get("description", ""),
+            "rejected_at": datetime.utcnow().isoformat(),
+        })
+        rejection_file.write_text(json.dumps(existing, indent=2))
+
+
+@activity.defn
+def recover_rejected_tools() -> list[str]:
+    """Load persisted rejected tool names from disk."""
+    activity.heartbeat("Recovering rejected tools")
+    rejection_file = Path(__file__).parent / "dynamic_tools" / "rejected_tools.json"
+    if not rejection_file.exists():
+        return []
+    try:
+        entries = json.loads(rejection_file.read_text())
+        return [e["name"] for e in entries if e.get("name")]
+    except (json.JSONDecodeError, KeyError):
+        return []
+
+
+@activity.defn
 def save_tool_secrets(secrets: dict[str, str]):
     """Encrypt and save secrets provided via Slack modal."""
     activity.heartbeat("Saving secrets")
