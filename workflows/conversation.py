@@ -15,8 +15,20 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, recover_approved_tools, send_slack_message
+    from activities import (
+        call_llm,
+        execute_tool,
+        recover_approved_tools,
+        recover_rejected_tool_entries,
+        send_slack_message,
+    )
     from config import Location, Preferences, build_conversation_prompt
+    from proposal_utils import (
+        format_rejected_capability_note,
+        normalize_identifier,
+        normalize_proposal,
+        validate_proposal,
+    )
     from tools import TOOL_DEFINITIONS, MEMORY_TOOLS
 
 RETRY = RetryPolicy(
@@ -50,6 +62,9 @@ class ConversationWorkflow:
         self.thread_ts: str = ""
         self._pending_messages: list[dict] = []
         self._closed: bool = False
+        self._rejected_tools: list[dict] = []
+        self._proposed_tool_names: set[str] = set()
+        self._proposed_capability_keys: set[str] = set()
 
     @workflow.signal
     async def message(self, msg: dict):
@@ -71,9 +86,19 @@ class ConversationWorkflow:
         location = Location()
         prefs = Preferences()
         system_prompt = build_conversation_prompt(location, prefs)
+        self._rejected_tools = await self._get_rejected_tool_entries()
+        rejected_note_text = format_rejected_capability_note(self._rejected_tools)
+        if rejected_note_text:
+            system_prompt += (
+                "\n\nPREVIOUSLY REJECTED CAPABILITIES "
+                "(do NOT propose these again, even under a new tool name): "
+                + rejected_note_text
+            )
 
         # Conversation history persists across all messages in this thread
         messages = []
+        self._proposed_tool_names = set()
+        self._proposed_capability_keys = set()
 
         # Process the initial message
         all_tools = await self._build_tool_list()
@@ -153,11 +178,32 @@ class ConversationWorkflow:
 
             for tool_call in llm_response["tool_calls"]:
                 if tool_call["name"] == "propose_new_tool":
-                    await self._handle_tool_proposal(tool_call)
+                    proposal = normalize_proposal({
+                        "id": str(workflow.uuid4())[:8],
+                        "proposed_at": workflow.now().isoformat(),
+                        **tool_call["input"],
+                    })
+                    validation_errors = self._validate_tool_proposal(proposal, all_tools)
+                    if validation_errors:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_call["id"],
+                            "content": (
+                                "Tool proposal rejected automatically: "
+                                + "; ".join(validation_errors[:4])
+                            ),
+                        })
+                        continue
+                    self._proposed_tool_names.add(proposal["name"])
+                    self._proposed_capability_keys.add(proposal["capability_key"])
+                    await self._handle_tool_proposal(proposal)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_call["id"],
-                        "content": "Tool proposal submitted for review.",
+                        "content": (
+                            f"Tool proposal `{proposal['name']}` "
+                            f"({proposal['capability_key']}) submitted for review."
+                        ),
                     })
                     continue
 
@@ -198,13 +244,8 @@ class ConversationWorkflow:
             retry_policy=RETRY,
         )
 
-    async def _handle_tool_proposal(self, tool_call: dict):
+    async def _handle_tool_proposal(self, proposal: dict):
         """Signal the registry to create a new tool proposal."""
-        proposal = {
-            "id": str(workflow.uuid4())[:8],
-            "proposed_at": workflow.now().isoformat(),
-            **tool_call["input"],
-        }
         registry = workflow.get_external_workflow_handle("tool-registry")
         await registry.signal("propose_tool", proposal)
 
@@ -224,3 +265,46 @@ class ConversationWorkflow:
         except Exception:
             workflow.logger.warn("Could not load dynamic tools")
             return []
+
+    async def _get_rejected_tool_entries(self) -> list[dict]:
+        """Load rejected capability entries from disk."""
+        try:
+            return await workflow.execute_activity(
+                recover_rejected_tool_entries,
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RETRY,
+            )
+        except Exception:
+            workflow.logger.warn("Could not load rejected tools")
+            return []
+
+    def _validate_tool_proposal(self, proposal: dict, all_tools: list[dict]) -> list[str]:
+        approved_tool_names = {
+            normalize_identifier(str(tool.get("name", "")))
+            for tool in all_tools
+            if tool.get("name")
+        }
+        approved_capability_keys = {
+            normalize_identifier(str(tool.get("capability_key", tool.get("name", ""))))
+            for tool in all_tools
+            if tool.get("name") or tool.get("capability_key")
+        }
+        rejected_tool_names = {
+            normalize_identifier(str(tool.get("name", "")))
+            for tool in self._rejected_tools
+            if tool.get("name")
+        }
+        rejected_capability_keys = {
+            normalize_identifier(str(tool.get("capability_key", "")))
+            for tool in self._rejected_tools
+            if tool.get("capability_key")
+        }
+        return validate_proposal(
+            proposal,
+            approved_tool_names=approved_tool_names,
+            approved_capability_keys=approved_capability_keys,
+            rejected_tool_names=rejected_tool_names,
+            rejected_capability_keys=rejected_capability_keys,
+            pending_tool_names=set(self._proposed_tool_names),
+            pending_capability_keys=set(self._proposed_capability_keys),
+        )

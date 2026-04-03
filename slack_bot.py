@@ -180,9 +180,13 @@ def create_slack_app(temporal_client: Client) -> App:
             text = f"Proposal `{proposal_id}` not found."
         else:
             code = proposal.get("suggested_implementation", "_No implementation provided._")
+            references = proposal.get("reference_urls", [])
+            reference_text = "\n".join(f"- {url}" for url in references) if references else "- None"
             text = (
-                f"*`{proposal['name']}`* — proposed implementation:\n\n"
-                f"```{code}```"
+                f"*`{proposal['name']}`* (`{proposal.get('capability_key', proposal['name'])}`)\n"
+                f"*Why:* {proposal.get('rationale', 'N/A')}\n"
+                f"*References:*\n{reference_text}\n\n"
+                f"*Implementation:*\n```{code}```"
             )
 
         client.chat_postMessage(

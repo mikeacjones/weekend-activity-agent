@@ -4,9 +4,9 @@ services:
     container_name: weekend-activity-agent
     env_file: .env
     volumes:
-      - ./dynamic_tools:/app/dynamic_tools
-      - ./memories:/app/memories
-      - ./secrets:/app/secrets
+      - agent_dynamic_tools:/app/dynamic_tools
+      - agent_memories:/app/memories
+      - agent_secrets:/app/secrets
     networks:
       - temporal-network
     restart: unless-stopped
@@ -17,9 +17,9 @@ services:
     build: .
     env_file: .env
     volumes:
-      - ./dynamic_tools:/app/dynamic_tools
-      - ./memories:/app/memories
-      - ./secrets:/app/secrets
+      - agent_dynamic_tools:/app/dynamic_tools
+      - agent_memories:/app/memories
+      - agent_secrets:/app/secrets
     networks:
       - temporal-network
     entrypoint: ["/app/entrypoint.sh", "cli"]
@@ -28,3 +28,8 @@ services:
 networks:
   temporal-network:
     external: true
+
+volumes:
+  agent_dynamic_tools:
+  agent_memories:
+  agent_secrets:

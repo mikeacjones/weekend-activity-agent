@@ -35,9 +35,6 @@ jobs:
             "TEMPORAL_NAMESPACE=weekend-activity-agent" \
             > .env
 
-      - name: Ensure persistent directories exist
-        run: mkdir -p dynamic_tools memories secrets
-
       - name: Build and deploy
         run: |
           docker compose down --remove-orphans || true

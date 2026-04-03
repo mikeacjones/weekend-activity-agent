@@ -11,12 +11,37 @@ from slack_sdk import WebClient
 from temporalio import activity
 
 from config import Location, Preferences, build_system_prompt
+from proposal_utils import normalize_proposal, normalize_tool_summary
 from tools import TOOL_DEFINITIONS, dispatch_tool
 
 anthropic_client = Anthropic()
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", ""))
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "")
 LLM_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+
+def _load_rejected_tool_entries_from_disk() -> list[dict]:
+    """Read rejected tool entries from disk and normalize them."""
+    rejection_file = Path(__file__).parent / "dynamic_tools" / "rejected_tools.json"
+    if not rejection_file.exists():
+        return []
+    try:
+        entries = json.loads(rejection_file.read_text())
+        if not isinstance(entries, list):
+            return []
+        recovered: list[dict] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            normalized = normalize_tool_summary(entry)
+            if normalized["name"] or normalized["capability_key"]:
+                recovered.append({
+                    **normalized,
+                    "rejected_at": str(entry.get("rejected_at", "")),
+                })
+        return recovered
+    except json.JSONDecodeError:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +246,13 @@ def notify_tool_proposal(proposal: dict):
     activity.heartbeat("Notifying about tool proposal")
 
     proposal_id = proposal["id"]
+    reference_urls = proposal.get("reference_urls", [])
+    reference_text = (
+        "\n".join(f"- <{url}|Reference {idx + 1}>"
+                  for idx, url in enumerate(reference_urls[:3]))
+        if reference_urls
+        else "_No references provided_"
+    )
     blocks = [
         {
             "type": "header",
@@ -233,7 +265,18 @@ def notify_tool_proposal(proposal: dict):
                 "text": (
                     f"*`{proposal['name']}`*\n\n"
                     f"{proposal['description']}\n\n"
+                    f"*Capability key:* `{proposal.get('capability_key', proposal['name'])}`\n"
                     f"*Why:* {proposal['rationale']}"
+                ),
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*References:*\n"
+                    f"{reference_text}"
                 ),
             },
         },
@@ -297,28 +340,31 @@ def write_dynamic_tool(proposal: dict):
 
     tool_dir = Path(__file__).parent / "dynamic_tools"
     tool_dir.mkdir(exist_ok=True)
+    normalized = normalize_proposal(proposal)
 
     # Write metadata for registry recovery on restart
     meta = {
-        "name": proposal["name"],
-        "description": proposal["description"],
-        "input_schema": proposal.get("input_schema", {
+        "name": normalized["name"],
+        "capability_key": normalized["capability_key"],
+        "description": normalized["description"],
+        "reference_urls": normalized.get("reference_urls", []),
+        "input_schema": normalized.get("input_schema", {
             "type": "object",
             "properties": {},
         }),
     }
-    meta_file = tool_dir / f"{proposal['name']}.json"
+    meta_file = tool_dir / f"{normalized['name']}.json"
     meta_file.write_text(json.dumps(meta, indent=2))
 
-    code = proposal.get("suggested_implementation", "")
+    code = normalized.get("suggested_implementation", "")
     if code:
-        header = f'"""{proposal["description"]}"""\n\n'
+        header = f'"""{normalized["description"]}"""\n\n'
         if "async def run(" not in code:
             code = f"{header}{code}"
-        tool_file = tool_dir / f"{proposal['name']}.py"
+        tool_file = tool_dir / f"{normalized['name']}.py"
         tool_file.write_text(code)
 
-    deps = proposal.get("dependencies", [])
+    deps = normalized.get("dependencies", [])
     if deps:
         activity.heartbeat(f"Installing deps: {deps}")
         subprocess.run(["uv", "pip", "install", *deps], check=True)
@@ -340,17 +386,12 @@ def recover_approved_tools() -> list[dict]:
 
     tools = []
     for meta_file in sorted(tool_dir.glob("*.json")):
+        if meta_file.name == "rejected_tools.json":
+            continue
         try:
             meta = json.loads(meta_file.read_text())
-            if meta.get("name"):
-                tools.append({
-                    "name": meta["name"],
-                    "description": meta.get("description", ""),
-                    "input_schema": meta.get("input_schema", {
-                        "type": "object",
-                        "properties": {},
-                    }),
-                })
+            if isinstance(meta, dict) and meta.get("name"):
+                tools.append(normalize_tool_summary(meta))
         except (json.JSONDecodeError, KeyError):
             continue
 
@@ -368,6 +409,7 @@ def recover_approved_tools() -> list[dict]:
                 desc = content[3:end].strip()
         tools.append({
             "name": name,
+            "capability_key": name,
             "description": desc or f"Dynamic tool: {name}",
             "input_schema": {"type": "object", "properties": {}},
         })
@@ -382,6 +424,7 @@ def record_tool_rejection(proposal: dict):
     tool_dir = Path(__file__).parent / "dynamic_tools"
     tool_dir.mkdir(exist_ok=True)
     rejection_file = tool_dir / "rejected_tools.json"
+    normalized = normalize_proposal(proposal)
 
     existing: list[dict] = []
     if rejection_file.exists():
@@ -390,27 +433,37 @@ def record_tool_rejection(proposal: dict):
         except json.JSONDecodeError:
             pass
 
-    if not any(r["name"] == proposal["name"] for r in existing):
+    existing_keys = {
+        normalize_tool_summary(r).get("capability_key", "")
+        for r in existing
+        if isinstance(r, dict)
+    }
+    if normalized["capability_key"] not in existing_keys:
         existing.append({
-            "name": proposal["name"],
-            "description": proposal.get("description", ""),
+            "name": normalized["name"],
+            "capability_key": normalized["capability_key"],
+            "description": normalized.get("description", ""),
             "rejected_at": datetime.utcnow().isoformat(),
         })
         rejection_file.write_text(json.dumps(existing, indent=2))
 
 
 @activity.defn
+def recover_rejected_tool_entries() -> list[dict]:
+    """Load persisted rejected tools with names and capability keys."""
+    activity.heartbeat("Recovering rejected tool entries")
+    return _load_rejected_tool_entries_from_disk()
+
+
+@activity.defn
 def recover_rejected_tools() -> list[str]:
     """Load persisted rejected tool names from disk."""
-    activity.heartbeat("Recovering rejected tools")
-    rejection_file = Path(__file__).parent / "dynamic_tools" / "rejected_tools.json"
-    if not rejection_file.exists():
-        return []
-    try:
-        entries = json.loads(rejection_file.read_text())
-        return [e["name"] for e in entries if e.get("name")]
-    except (json.JSONDecodeError, KeyError):
-        return []
+    activity.heartbeat("Recovering rejected tool names")
+    return [
+        entry["name"]
+        for entry in _load_rejected_tool_entries_from_disk()
+        if entry.get("name")
+    ]
 
 
 @activity.defn

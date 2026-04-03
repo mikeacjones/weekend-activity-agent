@@ -100,9 +100,9 @@ Slack Socket Mode Listener (daemon thread in worker process)
 | `get_weather` | weather.gov | Multi-day forecast (free, no key) |
 | `read_page` | Tavily Extract | Fetch full page content from a URL |
 | `save_recommendation` | Internal | Save a finding for the weekly report |
-| `propose_new_tool` | Internal | Propose a new tool for human review |
+| `propose_new_tool` | Internal | Last-resort capability request for publicly documented, feasible integrations |
 
-Dynamic tools approved through the HITL flow are loaded from `dynamic_tools/` at the start of each research run.
+Dynamic tools approved through the HITL flow are loaded from `dynamic_tools/` at the start of each research run. In Docker deployments, `dynamic_tools/`, `memories/`, and `secrets/` are mounted from Docker volumes so they survive container rebuilds.
 
 ## CLI
 

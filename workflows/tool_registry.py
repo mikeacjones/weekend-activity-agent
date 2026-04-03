@@ -14,7 +14,8 @@ from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import recover_approved_tools, recover_rejected_tools
+    from activities import recover_approved_tools, recover_rejected_tool_entries
+    from proposal_utils import normalize_identifier, normalize_proposal, normalize_tool_summary
 
 from .tool_proposal import ToolProposalWorkflow
 
@@ -31,7 +32,10 @@ class ToolRegistryWorkflow:
 
     def __init__(self):
         self.approved_tools: list[dict] = []
+        self.approved_capability_keys: list[str] = []
+        self.rejected_tools: list[dict] = []
         self.rejected_tool_names: list[str] = []
+        self.rejected_capability_keys: list[str] = []
         self._pending_proposals: list[dict] = []
         self._has_updates: bool = False
 
@@ -39,21 +43,70 @@ class ToolRegistryWorkflow:
 
     @workflow.signal
     async def propose_tool(self, proposal: dict):
-        self._pending_proposals.append(proposal)
+        normalized = normalize_proposal(proposal)
+        pending_names = {p["name"] for p in self._pending_proposals}
+        pending_capability_keys = {p["capability_key"] for p in self._pending_proposals}
+        approved_names = {tool["name"] for tool in self.approved_tools}
+        rejected_names = {tool["name"] for tool in self.rejected_tools}
+        if (
+            normalized["name"] in approved_names
+            or normalized["capability_key"] in set(self.approved_capability_keys)
+            or normalized["name"] in rejected_names
+            or normalized["capability_key"] in set(self.rejected_capability_keys)
+            or normalized["name"] in pending_names
+            or normalized["capability_key"] in pending_capability_keys
+        ):
+            workflow.logger.info(
+                "Ignoring duplicate or rejected tool proposal: "
+                f"{normalized['capability_key']}"
+            )
+            return
+        self._pending_proposals.append(normalized)
         self._has_updates = True
-        workflow.logger.info(f"New tool proposal: {proposal['name']} ({proposal['id']})")
+        workflow.logger.info(
+            f"New tool proposal: {normalized['name']} ({normalized['id']})"
+        )
 
     @workflow.signal
     async def tool_approved(self, tool: dict):
-        self.approved_tools.append(tool)
+        normalized = normalize_tool_summary(tool)
+        if normalized["name"] and all(
+            existing["name"] != normalized["name"] for existing in self.approved_tools
+        ):
+            self.approved_tools.append(normalized)
+        if (
+            normalized["capability_key"]
+            and normalized["capability_key"] not in self.approved_capability_keys
+        ):
+            self.approved_capability_keys.append(normalized["capability_key"])
         self._has_updates = True
-        workflow.logger.info(f"Tool registered: {tool['name']}")
+        workflow.logger.info(f"Tool registered: {normalized['name']}")
 
     @workflow.signal
-    async def tool_rejected(self, tool_name: str):
-        if tool_name not in self.rejected_tool_names:
-            self.rejected_tool_names.append(tool_name)
-        workflow.logger.info(f"Tool rejected: {tool_name}")
+    async def tool_rejected(self, tool: str | dict):
+        if isinstance(tool, dict):
+            normalized = normalize_tool_summary(tool)
+        else:
+            name = normalize_identifier(str(tool))
+            normalized = {
+                "name": name,
+                "capability_key": name,
+                "description": "",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        if normalized["name"] and normalized["name"] not in self.rejected_tool_names:
+            self.rejected_tool_names.append(normalized["name"])
+        if (
+            normalized["capability_key"]
+            and normalized["capability_key"] not in self.rejected_capability_keys
+        ):
+            self.rejected_capability_keys.append(normalized["capability_key"])
+        if normalized["capability_key"] and all(
+            existing["capability_key"] != normalized["capability_key"]
+            for existing in self.rejected_tools
+        ):
+            self.rejected_tools.append(normalized)
+        workflow.logger.info(f"Tool rejected: {normalized['capability_key']}")
 
     # --- Queries ---
 
@@ -71,10 +124,15 @@ class ToolRegistryWorkflow:
     async def run(
         self,
         carry_over: list[dict] | None = None,
-        rejected_carry_over: list[str] | None = None,
+        rejected_carry_over: list[dict] | list[str] | None = None,
     ):
         if carry_over:
-            self.approved_tools = carry_over
+            self.approved_tools = [normalize_tool_summary(tool) for tool in carry_over]
+            self.approved_capability_keys = [
+                tool["capability_key"]
+                for tool in self.approved_tools
+                if tool["capability_key"]
+            ]
         else:
             recovered = await workflow.execute_activity(
                 recover_approved_tools,
@@ -82,19 +140,53 @@ class ToolRegistryWorkflow:
                 retry_policy=RETRY,
             )
             if recovered:
-                self.approved_tools = recovered
+                self.approved_tools = [normalize_tool_summary(tool) for tool in recovered]
+                self.approved_capability_keys = [
+                    tool["capability_key"]
+                    for tool in self.approved_tools
+                    if tool["capability_key"]
+                ]
                 workflow.logger.info(f"Recovered {len(recovered)} tools from disk")
 
         if rejected_carry_over:
-            self.rejected_tool_names = rejected_carry_over
+            if all(isinstance(entry, dict) for entry in rejected_carry_over):
+                self.rejected_tools = [
+                    normalize_tool_summary(entry) for entry in rejected_carry_over
+                ]
+            else:
+                self.rejected_tools = [
+                    {
+                        "name": normalize_identifier(str(name)),
+                        "capability_key": normalize_identifier(str(name)),
+                        "description": "",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                    for name in rejected_carry_over
+                ]
+            self.rejected_tool_names = [
+                entry["name"] for entry in self.rejected_tools if entry["name"]
+            ]
+            self.rejected_capability_keys = [
+                entry["capability_key"]
+                for entry in self.rejected_tools
+                if entry["capability_key"]
+            ]
         else:
             rejected = await workflow.execute_activity(
-                recover_rejected_tools,
+                recover_rejected_tool_entries,
                 start_to_close_timeout=timedelta(minutes=1),
                 retry_policy=RETRY,
             )
             if rejected:
-                self.rejected_tool_names = rejected
+                self.rejected_tools = [normalize_tool_summary(entry) for entry in rejected]
+                self.rejected_tool_names = [
+                    entry["name"] for entry in self.rejected_tools if entry["name"]
+                ]
+                self.rejected_capability_keys = [
+                    entry["capability_key"]
+                    for entry in self.rejected_tools
+                    if entry["capability_key"]
+                ]
                 workflow.logger.info(f"Recovered {len(rejected)} rejected tools from disk")
 
         cycles = 0
@@ -120,4 +212,4 @@ class ToolRegistryWorkflow:
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
 
-        workflow.continue_as_new(args=[self.approved_tools, self.rejected_tool_names])
+        workflow.continue_as_new(args=[self.approved_tools, self.rejected_tools])

@@ -92,7 +92,13 @@ async def cmd_review(args):
     print(f"Status:   {proposal['status']}")
     print(f"{'=' * 60}")
     print(f"\nDescription:\n  {proposal['description']}")
+    print(f"\nCapability Key:\n  {proposal.get('capability_key', proposal['name'])}")
     print(f"\nRationale:\n  {proposal.get('rationale', 'N/A')}")
+
+    if proposal.get("reference_urls"):
+        print("\nReferences:")
+        for url in proposal["reference_urls"]:
+            print(f"  - {url}")
 
     if proposal.get("input_schema"):
         print(f"\nInput Schema:")

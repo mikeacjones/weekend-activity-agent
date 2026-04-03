@@ -24,6 +24,7 @@ with workflow.unsafe.imports_passed_through():
         send_slack_message,
         write_dynamic_tool,
     )
+    from proposal_utils import normalize_proposal, normalize_tool_summary
 
 RETRY = RetryPolicy(
     maximum_attempts=3,
@@ -95,14 +96,18 @@ class ToolProposalWorkflow:
 
     @workflow.run
     async def run(self, proposal: dict) -> dict:
-        self.proposal = proposal
+        self.proposal = normalize_proposal(proposal)
+        if "id" in proposal:
+            self.proposal["id"] = proposal["id"]
+        if "proposed_at" in proposal:
+            self.proposal["proposed_at"] = proposal["proposed_at"]
         self.status = "pending"
         start_time = workflow.now()
 
         # Post the proposal notification to Slack
         slack_result = await workflow.execute_activity(
             notify_tool_proposal,
-            args=[proposal],
+            args=[self.proposal],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=RETRY,
         )
@@ -165,6 +170,7 @@ class ToolProposalWorkflow:
 
             tool_def = {
                 "name": self.proposal["name"],
+                "capability_key": self.proposal.get("capability_key", self.proposal["name"]),
                 "description": self.proposal["description"],
                 "input_schema": self.proposal.get("input_schema", {
                     "type": "object",
@@ -184,7 +190,7 @@ class ToolProposalWorkflow:
                 retry_policy=RETRY,
             )
             registry = workflow.get_external_workflow_handle("tool-registry")
-            await registry.signal("tool_rejected", self.proposal["name"])
+            await registry.signal("tool_rejected", normalize_tool_summary(self.proposal))
 
         elif not self._resolved:
             self.status = "expired"

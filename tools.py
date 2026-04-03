@@ -165,11 +165,12 @@ TOOL_DEFINITIONS = [
     {
         "name": "propose_new_tool",
         "description": (
-            "Propose a new tool/capability that would help your research. This "
-            "sends a notification to the user for review and approval. Do NOT wait "
-            "for approval — continue your research with existing tools. Examples: "
-            "'check AllTrails for trail conditions', 'search OpenTable for restaurant "
-            "availability', 'check Atlanta BeltLine event calendar'."
+            "Last resort: propose a new tool/capability only when the task is "
+            "important, impossible with current tools, and plausibly implementable "
+            "with a public webpage or documented API. You must include a stable "
+            "capability_key and at least one public docs/reference URL. Never use "
+            "this for browser automation, logins, CAPTCHAs, private APIs, or mobile "
+            "apps. Do NOT wait for approval; continue with existing tools."
         ),
         "input_schema": {
             "type": "object",
@@ -177,6 +178,14 @@ TOOL_DEFINITIONS = [
                 "name": {
                     "type": "string",
                     "description": "Tool name in snake_case",
+                },
+                "capability_key": {
+                    "type": "string",
+                    "description": (
+                        "Stable snake_case identifier for the underlying capability. "
+                        "Use the service plus action, e.g. 'alltrails_trail_conditions' "
+                        "or 'beltline_events_calendar'."
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -189,11 +198,21 @@ TOOL_DEFINITIONS = [
                 "suggested_implementation": {
                     "type": "string",
                     "description": (
-                        "Python code for the tool implementation. Should be a single "
-                        "async function that takes a dict input and returns a string. "
-                        "httpx is already available — prefer it for HTTP requests. "
-                        "For API keys, use: from secrets_store import get_secret; "
+                        "Implementation sketch in Python. It must include a single "
+                        "async function `run(tool_input: dict)` that returns a string. "
+                        "Use only feasible patterns: public HTTP requests via httpx, "
+                        "light HTML parsing, and documented APIs. No browser automation, "
+                        "no login/session scraping, and no private endpoints. For API "
+                        "keys, use: from secrets_store import get_secret; "
                         "token = get_secret('SECRET_NAME')"
+                    ),
+                },
+                "reference_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "One or more public docs/reference URLs proving the capability "
+                        "exists and is feasible to implement."
                     ),
                 },
                 "dependencies": {
@@ -232,7 +251,15 @@ TOOL_DEFINITIONS = [
                     "description": "JSON Schema for the tool's input parameters",
                 },
             },
-            "required": ["name", "description", "rationale", "suggested_implementation"],
+            "required": [
+                "name",
+                "capability_key",
+                "description",
+                "rationale",
+                "suggested_implementation",
+                "reference_urls",
+                "input_schema",
+            ],
         },
     },
 ]
@@ -467,7 +494,11 @@ async def dispatch_tool(name: str, tool_input: dict) -> str:
             return "Recommendation saved."
 
         case "propose_new_tool":
-            return "Tool proposal submitted for review. Continuing with existing tools."
+            capability_key = tool_input.get("capability_key", tool_input.get("name", "unknown"))
+            return (
+                f"Tool proposal `{tool_input.get('name', 'unknown')}` "
+                f"({capability_key}) submitted for review. Continuing with existing tools."
+            )
 
         case "save_memory":
             return await save_memory(tool_input["key"], tool_input["content"])

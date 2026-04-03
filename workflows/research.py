@@ -17,8 +17,19 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from activities import call_llm, execute_tool, recover_approved_tools, recover_rejected_tools
+    from activities import (
+        call_llm,
+        execute_tool,
+        recover_approved_tools,
+        recover_rejected_tool_entries,
+    )
     from config import Location, Preferences, build_system_prompt
+    from proposal_utils import (
+        format_rejected_capability_note,
+        normalize_identifier,
+        normalize_proposal,
+        validate_proposal,
+    )
     from tools import TOOL_DEFINITIONS
 
 RETRY = RetryPolicy(
@@ -37,7 +48,9 @@ class AgenticResearchWorkflow:
     def __init__(self):
         self.iteration: int = 0
         self.findings: list[dict] = []
-        self.rejected_tool_names: list[str] = []
+        self.rejected_tools: list[dict] = []
+        self._proposed_tool_names: set[str] = set()
+        self._proposed_capability_keys: set[str] = set()
 
     @workflow.query
     def get_progress(self) -> dict:
@@ -56,12 +69,14 @@ class AgenticResearchWorkflow:
         dynamic_tools = await self._get_dynamic_tools()
         all_tools = TOOL_DEFINITIONS + dynamic_tools
 
-        # Load rejected tools so the LLM knows not to re-propose them
-        self.rejected_tool_names = await self._get_rejected_tools()
-        if self.rejected_tool_names:
+        # Load rejected capabilities so the LLM knows not to re-propose them.
+        self.rejected_tools = await self._get_rejected_tool_entries()
+        rejected_note_text = format_rejected_capability_note(self.rejected_tools)
+        if rejected_note_text:
             rejected_note = (
-                "\n\nPREVIOUSLY REJECTED TOOLS (do NOT propose these again): "
-                + ", ".join(self.rejected_tool_names)
+                "\n\nPREVIOUSLY REJECTED CAPABILITIES "
+                "(do NOT propose these again, even under a new tool name): "
+                + rejected_note_text
             )
             system_prompt += rejected_note
 
@@ -77,6 +92,8 @@ class AgenticResearchWorkflow:
 
         self.findings = []
         self.iteration = 0
+        self._proposed_tool_names = set()
+        self._proposed_capability_keys = set()
 
         while self.iteration < MAX_ITERATIONS:
             self.iteration += 1
@@ -98,22 +115,34 @@ class AgenticResearchWorkflow:
             for tool_call in llm_response["tool_calls"]:
                 # Handle special tools that interact with workflows
                 if tool_call["name"] == "propose_new_tool":
-                    proposed_name = tool_call["input"].get("name", "")
-                    if proposed_name in self.rejected_tool_names:
+                    proposal = normalize_proposal({
+                        "id": str(workflow.uuid4())[:8],
+                        "proposed_at": workflow.now().isoformat(),
+                        **tool_call["input"],
+                    })
+                    validation_errors = self._validate_tool_proposal(proposal, all_tools)
+                    if validation_errors:
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tool_call["id"],
                             "content": (
-                                f"Tool '{proposed_name}' was previously rejected by the user. "
-                                "Do not propose it again. Continue research with existing tools."
+                                "Tool proposal rejected automatically: "
+                                + "; ".join(validation_errors[:4])
+                                + " Continue research with existing tools."
                             ),
                         })
                         continue
-                    await self._handle_tool_proposal(tool_call)
+                    self._proposed_tool_names.add(proposal["name"])
+                    self._proposed_capability_keys.add(proposal["capability_key"])
+                    await self._handle_tool_proposal(proposal)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_call["id"],
-                        "content": "Tool proposal submitted for review. Continuing research.",
+                        "content": (
+                            f"Tool proposal `{proposal['name']}` "
+                            f"({proposal['capability_key']}) submitted for review. "
+                            "Continuing research."
+                        ),
                     })
                     continue
 
@@ -151,15 +180,9 @@ class AgenticResearchWorkflow:
         )
         return self.findings
 
-    async def _handle_tool_proposal(self, tool_call: dict):
+    async def _handle_tool_proposal(self, proposal: dict):
         """Signal the ToolRegistryWorkflow. The registry spawns a child workflow
         that handles Slack notification and discussion."""
-        proposal = {
-            "id": str(workflow.uuid4())[:8],
-            "proposed_at": workflow.now().isoformat(),
-            **tool_call["input"],
-        }
-
         registry_handle = workflow.get_external_workflow_handle("tool-registry")
         await registry_handle.signal("propose_tool", proposal)
 
@@ -175,14 +198,45 @@ class AgenticResearchWorkflow:
             workflow.logger.warn("Could not load dynamic tools")
             return []
 
-    async def _get_rejected_tools(self) -> list[str]:
-        """Load rejected tool names from disk."""
+    async def _get_rejected_tool_entries(self) -> list[dict]:
+        """Load rejected capability entries from disk."""
         try:
             return await workflow.execute_activity(
-                recover_rejected_tools,
+                recover_rejected_tool_entries,
                 start_to_close_timeout=timedelta(minutes=1),
                 retry_policy=RETRY,
             )
         except Exception:
             workflow.logger.warn("Could not load rejected tools")
             return []
+
+    def _validate_tool_proposal(self, proposal: dict, all_tools: list[dict]) -> list[str]:
+        approved_tool_names = {
+            normalize_identifier(str(tool.get("name", "")))
+            for tool in all_tools
+            if tool.get("name")
+        }
+        approved_capability_keys = {
+            normalize_identifier(str(tool.get("capability_key", tool.get("name", ""))))
+            for tool in all_tools
+            if tool.get("name") or tool.get("capability_key")
+        }
+        rejected_tool_names = {
+            normalize_identifier(str(tool.get("name", "")))
+            for tool in self.rejected_tools
+            if tool.get("name")
+        }
+        rejected_capability_keys = {
+            normalize_identifier(str(tool.get("capability_key", "")))
+            for tool in self.rejected_tools
+            if tool.get("capability_key")
+        }
+        return validate_proposal(
+            proposal,
+            approved_tool_names=approved_tool_names,
+            approved_capability_keys=approved_capability_keys,
+            rejected_tool_names=rejected_tool_names,
+            rejected_capability_keys=rejected_capability_keys,
+            pending_tool_names=set(self._proposed_tool_names),
+            pending_capability_keys=set(self._proposed_capability_keys),
+        )
