@@ -168,7 +168,6 @@ class ConversationWorkflow:
                 break
 
             # Show tool call indicators and execute
-            tool_results = []
             tool_names = [tc["name"] for tc in llm_response["tool_calls"]]
             indicators = [
                 TOOL_LABELS.get(name, f":gear: Using {name}")
@@ -176,7 +175,35 @@ class ConversationWorkflow:
             ]
             await self._post_to_thread("_" + " · ".join(indicators) + "..._")
 
-            for tool_call in llm_response["tool_calls"]:
+            tool_results = [None] * len(llm_response["tool_calls"])
+
+            async def _run_tool(tc):
+                try:
+                    res = await workflow.execute_activity(
+                        execute_tool,
+                        args=[tc["name"], tc["input"]],
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=RETRY,
+                    )
+                except Exception as e:
+                    label = TOOL_LABELS.get(tc["name"], tc["name"])
+                    await self._post_to_thread(
+                        f":warning: {label} failed: {e}"
+                    )
+                    res = (
+                        f"Tool call failed with error: {e}\n"
+                        f"Let the user know and suggest alternatives."
+                    )
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tc["id"],
+                    "content": res,
+                }
+
+            # Handle proposals inline (they mutate workflow state),
+            # collect regular tool calls for parallel execution.
+            parallel_tasks = []
+            for idx, tool_call in enumerate(llm_response["tool_calls"]):
                 if tool_call["name"] == "propose_new_tool":
                     proposal = normalize_proposal({
                         "id": str(workflow.uuid4())[:8],
@@ -185,52 +212,36 @@ class ConversationWorkflow:
                     })
                     validation_errors = self._validate_tool_proposal(proposal, all_tools)
                     if validation_errors:
-                        tool_results.append({
+                        tool_results[idx] = {
                             "type": "tool_result",
                             "tool_use_id": tool_call["id"],
                             "content": (
                                 "Tool proposal rejected automatically: "
                                 + "; ".join(validation_errors[:4])
                             ),
-                        })
+                        }
                         continue
                     self._proposed_tool_names.add(proposal["name"])
                     self._proposed_capability_keys.add(proposal["capability_key"])
                     await self._handle_tool_proposal(proposal)
-                    tool_results.append({
+                    tool_results[idx] = {
                         "type": "tool_result",
                         "tool_use_id": tool_call["id"],
                         "content": (
                             f"Tool proposal `{proposal['name']}` "
                             f"({proposal['capability_key']}) submitted for review."
                         ),
-                    })
+                    }
                     continue
 
-                try:
-                    result = await workflow.execute_activity(
-                        execute_tool,
-                        args=[tool_call["name"], tool_call["input"]],
-                        start_to_close_timeout=timedelta(minutes=5),
-                        retry_policy=RETRY,
-                    )
-                except Exception as e:
-                    label = TOOL_LABELS.get(
-                        tool_call["name"], tool_call["name"],
-                    )
-                    await self._post_to_thread(
-                        f":warning: {label} failed: {e}"
-                    )
-                    result = (
-                        f"Tool call failed with error: {e}\n"
-                        f"Let the user know and suggest alternatives."
-                    )
+                parallel_tasks.append((idx, _run_tool(tool_call)))
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call["id"],
-                    "content": result,
-                })
+            # Execute regular tool calls in parallel
+            if parallel_tasks:
+                indices, coros = zip(*parallel_tasks)
+                results = await asyncio.gather(*coros)
+                for i, result in zip(indices, results):
+                    tool_results[i] = result
 
             messages.append({"role": "assistant", "content": llm_response["raw_content"]})
             messages.append({"role": "user", "content": tool_results})
