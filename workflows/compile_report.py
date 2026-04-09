@@ -15,9 +15,10 @@ with workflow.unsafe.imports_passed_through():
     from activities import call_llm_for_report, parse_report
 
 RETRY = RetryPolicy(
-    maximum_attempts=3,
-    initial_interval=timedelta(seconds=10),
+    maximum_attempts=10,
+    initial_interval=timedelta(seconds=30),
     backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=2),
 )
 
 
