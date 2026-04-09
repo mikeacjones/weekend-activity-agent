@@ -38,6 +38,16 @@ RETRY = RetryPolicy(
     backoff_coefficient=2.0,
 )
 
+# LLM calls get a much longer retry window — 529 overload errors can last
+# minutes and we'd rather wait than lose an entire research session.
+# ~13 min total: 30s, 60s, 120s, 120s, 120s, 120s, 120s, 120s, 120s
+LLM_RETRY = RetryPolicy(
+    maximum_attempts=10,
+    initial_interval=timedelta(seconds=30),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=2),
+)
+
 MAX_ITERATIONS = 25  # guardrail against runaway loops
 
 
@@ -99,12 +109,20 @@ class AgenticResearchWorkflow:
             self.iteration += 1
 
             # --- LLM reasoning step (persisted as activity result) ---
-            llm_response = await workflow.execute_activity(
-                call_llm,
-                args=[system_prompt, messages, all_tools],
-                start_to_close_timeout=timedelta(minutes=3),
-                retry_policy=RETRY,
-            )
+            try:
+                llm_response = await workflow.execute_activity(
+                    call_llm,
+                    args=[system_prompt, messages, all_tools],
+                    start_to_close_timeout=timedelta(minutes=3),
+                    retry_policy=LLM_RETRY,
+                )
+            except Exception as e:
+                workflow.logger.error(
+                    f"LLM call failed after all retries on iteration "
+                    f"{self.iteration}: {e}. Returning {len(self.findings)} "
+                    f"findings collected so far."
+                )
+                break
 
             # Agent decided it's done researching
             if llm_response["stop_reason"] == "end_turn":
