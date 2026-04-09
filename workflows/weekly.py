@@ -47,6 +47,12 @@ class WeeklyResearchWorkflow:
     def __init__(self):
         self.status: str = "starting"
         self.findings: list[dict] = []
+        self._retry_synthesis = False
+
+    @workflow.signal
+    async def retry_synthesis(self):
+        """Signal from a human that the blocking issue (e.g. credits) is resolved."""
+        self._retry_synthesis = True
 
     @workflow.query
     def get_status(self) -> dict:
@@ -58,6 +64,7 @@ class WeeklyResearchWorkflow:
     @workflow.run
     async def run(self, location_area: str, slack_channel: str):
         self.findings = []
+        self._retry_synthesis = False
 
         now = workflow.now()
         today = now.weekday()  # 0=Mon, 6=Sun
@@ -76,6 +83,8 @@ class WeeklyResearchWorkflow:
             if day_num >= today
         ]
 
+        failed_days = []
+
         for i, (day_num, day_name) in enumerate(remaining):
             if i > 0:
                 self.status = f"sleeping until {day_name}"
@@ -86,42 +95,108 @@ class WeeklyResearchWorkflow:
 
             focus = DAILY_RESEARCH_FOCUS[day_name]
 
-            daily = await workflow.execute_child_workflow(
-                AgenticResearchWorkflow.run,
-                args=[location_area, day_name, focus],
-                id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day_name.lower()}",
-                execution_timeout=timedelta(hours=2),
-                retry_policy=RETRY,
-            )
-            self.findings.extend(daily)
-
-            workflow.logger.info(
-                f"{day_name} complete: {len(daily)} new findings, "
-                f"{len(self.findings)} total"
-            )
+            try:
+                daily = await workflow.execute_child_workflow(
+                    AgenticResearchWorkflow.run,
+                    args=[location_area, day_name, focus],
+                    id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day_name.lower()}",
+                    execution_timeout=timedelta(hours=2),
+                    retry_policy=RETRY,
+                )
+                self.findings.extend(daily)
+                workflow.logger.info(
+                    f"{day_name} complete: {len(daily)} new findings, "
+                    f"{len(self.findings)} total"
+                )
+            except Exception as e:
+                failed_days.append(day_name)
+                workflow.logger.error(
+                    f"{day_name} research failed after all retries: {e}. "
+                    f"Preserving {len(self.findings)} findings from prior days."
+                )
 
         # --- Compile and send the weekly report ---
+        if not self.findings:
+            self.status = "no findings this week, sleeping until next week"
+            workflow.logger.warn("No findings collected this week, skipping report.")
+            await self._sleep_until_next_monday()
+            workflow.continue_as_new(args=[location_area, slack_channel])
+            return
+
         self.status = "compiling report"
 
-        weather = await workflow.execute_activity(
-            get_current_weather_summary,
-            start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=RETRY,
-        )
+        try:
+            weather = await workflow.execute_activity(
+                get_current_weather_summary,
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=RETRY,
+            )
+        except Exception as e:
+            workflow.logger.warn(f"Weather fetch failed: {e}")
+            weather = "Weather forecast unavailable."
 
-        report = await workflow.execute_child_workflow(
-            CompileReportWorkflow.run,
-            args=[self.findings, weather],
-            id=f"compile-report-{workflow.now().strftime('%Y-%m-%d')}",
-            execution_timeout=timedelta(minutes=10),
-        )
+        # Synthesis loop — retries with human-in-the-loop on persistent failure
+        synthesis_attempt = 0
+        while True:
+            synthesis_attempt += 1
+            try:
+                report = await workflow.execute_child_workflow(
+                    CompileReportWorkflow.run,
+                    args=[self.findings, weather],
+                    id=f"compile-report-{workflow.now().strftime('%Y-%m-%d')}-{synthesis_attempt}",
+                    execution_timeout=timedelta(minutes=10),
+                )
 
-        await workflow.execute_activity(
-            send_slack_message,
-            args=[slack_channel, report["text"], report["blocks"]],
-            start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=RETRY,
-        )
+                await workflow.execute_activity(
+                    send_slack_message,
+                    args=[slack_channel, report["text"], report["blocks"]],
+                    start_to_close_timeout=timedelta(minutes=2),
+                    retry_policy=RETRY,
+                )
+                break  # success
+            except Exception as e:
+                self.status = "synthesis failed — waiting for retry signal"
+                workflow.logger.error(
+                    f"Report synthesis attempt {synthesis_attempt} failed: {e}"
+                )
+
+                try:
+                    await workflow.execute_activity(
+                        send_slack_message,
+                        args=[
+                            slack_channel,
+                            (
+                                f":warning: Weekly report synthesis failed "
+                                f"(attempt {synthesis_attempt}): {e}\n\n"
+                                f"I have *{len(self.findings)} findings* ready to "
+                                f"compile. Once the issue is resolved, send me the "
+                                f"`retry_synthesis` signal and I'll try again.\n\n"
+                                f"```temporal workflow signal "
+                                f"--name retry_synthesis --input '\"null\"' "
+                                f"--workflow-id {workflow.info().workflow_id} "
+                                f"--namespace weekend-activity-agent```"
+                            ),
+                            None,
+                        ],
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=RETRY,
+                    )
+                except Exception:
+                    workflow.logger.error(
+                        "Could not send failure notification to Slack"
+                    )
+
+                self._retry_synthesis = False
+                await workflow.wait_condition(lambda: self._retry_synthesis)
+                self._retry_synthesis = False
+                self.status = "retrying synthesis"
+
+        if failed_days:
+            workflow.logger.warn(
+                f"Weekly report sent but {', '.join(failed_days)} research "
+                f"failed. Report based on {len(self.findings)} findings from "
+                f"successful days only."
+            )
 
         self.status = "report sent, sleeping until next week"
         workflow.logger.info(f"Weekly report sent. {len(self.findings)} findings.")
