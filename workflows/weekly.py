@@ -31,6 +31,8 @@ RETRY = RetryPolicy(
     backoff_coefficient=2.0,
 )
 
+SLACK_BLOCK_LIMIT = 50
+
 # Monday=0 through Thursday=3
 RESEARCH_DAYS = {
     0: "Monday",
@@ -38,6 +40,13 @@ RESEARCH_DAYS = {
     2: "Wednesday",
     3: "Thursday",
 }
+
+
+def _chunk_blocks(blocks: list[dict], limit: int = SLACK_BLOCK_LIMIT) -> list[list[dict]]:
+    """Split blocks into chunks that fit Slack's per-message block limit."""
+    if not blocks:
+        return [[]]
+    return [blocks[i:i + limit] for i in range(0, len(blocks), limit)]
 
 
 @workflow.defn
@@ -147,12 +156,31 @@ class WeeklyResearchWorkflow:
                     execution_timeout=timedelta(minutes=10),
                 )
 
-                await workflow.execute_activity(
+                chunks = _chunk_blocks(report["blocks"])
+                total = len(chunks)
+                first = await workflow.execute_activity(
                     send_slack_message,
-                    args=[slack_channel, report["text"], report["blocks"]],
+                    args=[
+                        slack_channel,
+                        report["text"] if total == 1 else f"{report['text']} (1/{total})",
+                        chunks[0],
+                    ],
                     start_to_close_timeout=timedelta(minutes=2),
                     retry_policy=RETRY,
                 )
+                for idx, chunk in enumerate(chunks[1:], start=2):
+                    await workflow.execute_activity(
+                        send_slack_message,
+                        args=[
+                            slack_channel,
+                            f"{report['text']} ({idx}/{total})",
+                            chunk,
+                            None,
+                            first["ts"],
+                        ],
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=RETRY,
+                    )
                 break  # success
             except Exception as e:
                 self.status = "synthesis failed — waiting for retry signal"
