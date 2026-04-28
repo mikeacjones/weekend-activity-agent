@@ -42,11 +42,13 @@ RESEARCH_DAYS = {
 }
 
 
-def _chunk_blocks(blocks: list[dict], limit: int = SLACK_BLOCK_LIMIT) -> list[list[dict]]:
+def _chunk_blocks(
+    blocks: list[dict], limit: int = SLACK_BLOCK_LIMIT
+) -> list[list[dict]]:
     """Split blocks into chunks that fit Slack's per-message block limit."""
     if not blocks:
         return [[]]
-    return [blocks[i:i + limit] for i in range(0, len(blocks), limit)]
+    return [blocks[i : i + limit] for i in range(0, len(blocks), limit)]
 
 
 @workflow.defn
@@ -95,6 +97,7 @@ class WeeklyResearchWorkflow:
         failed_days = []
 
         for i, (day_num, day_name) in enumerate(remaining):
+            research_day = now + timedelta(days=today - day_num)
             if i > 0:
                 self.status = f"sleeping until {day_name}"
                 await self._sleep_until_next_morning()
@@ -107,7 +110,7 @@ class WeeklyResearchWorkflow:
             try:
                 daily = await workflow.execute_child_workflow(
                     AgenticResearchWorkflow.run,
-                    args=[location_area, day_name, focus],
+                    args=[location_area, f"{day_name}, {research_day}", focus],
                     id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day_name.lower()}",
                     execution_timeout=timedelta(hours=2),
                     retry_policy=RETRY,
@@ -162,7 +165,9 @@ class WeeklyResearchWorkflow:
                     send_slack_message,
                     args=[
                         slack_channel,
-                        report["text"] if total == 1 else f"{report['text']} (1/{total})",
+                        report["text"]
+                        if total == 1
+                        else f"{report['text']} (1/{total})",
                         chunks[0],
                     ],
                     start_to_close_timeout=timedelta(minutes=2),
@@ -235,7 +240,9 @@ class WeeklyResearchWorkflow:
     async def _sleep_until_next_morning(self):
         """Sleep until 8:00 AM the next day."""
         now = workflow.now()
-        tomorrow_8am = now.replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        tomorrow_8am = now.replace(
+            hour=8, minute=0, second=0, microsecond=0
+        ) + timedelta(days=1)
         delta = tomorrow_8am - now
         if delta.total_seconds() > 0:
             await workflow.sleep(delta)
@@ -246,9 +253,9 @@ class WeeklyResearchWorkflow:
         days_until_monday = (7 - now.weekday()) % 7
         if days_until_monday == 0:
             days_until_monday = 7
-        next_monday = now.replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(
-            days=days_until_monday
-        )
+        next_monday = now.replace(
+            hour=8, minute=0, second=0, microsecond=0
+        ) + timedelta(days=days_until_monday)
         delta = next_monday - now
         if delta.total_seconds() > 0:
             await workflow.sleep(delta)
