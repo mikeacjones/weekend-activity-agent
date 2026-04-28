@@ -110,7 +110,7 @@ class WeeklyResearchWorkflow:
             try:
                 daily = await workflow.execute_child_workflow(
                     AgenticResearchWorkflow.run,
-                    args=[location_area, f"{day_name}, {research_day}", focus],
+                    args=[location_area, f"{day_name}, {research_day.date()}", focus],
                     id=f"research-{workflow.now().strftime('%Y-%m-%d')}-{day_name.lower()}",
                     execution_timeout=timedelta(hours=2),
                     retry_policy=RETRY,
