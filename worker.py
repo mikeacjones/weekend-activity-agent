@@ -15,7 +15,6 @@ from activities import (
     call_llm_for_report,
     call_llm_simple,
     discuss_tool_proposal,
-    execute_tool,
     get_current_weather_summary,
     notify_tool_proposal,
     parse_report,
@@ -27,6 +26,7 @@ from activities import (
     send_slack_message,
     write_dynamic_tool,
 )
+from agent_harness.dynamic_executor import execute_tool_dynamic
 from workflows import (
     AgenticResearchWorkflow,
     CompileReportWorkflow,
@@ -68,7 +68,7 @@ async def main():
             call_llm_for_report,
             call_llm_simple,
             discuss_tool_proposal,
-            execute_tool,
+            execute_tool_dynamic,
             get_current_weather_summary,
             notify_tool_proposal,
             parse_report,
