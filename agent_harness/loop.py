@@ -120,7 +120,6 @@ async def run_agent_turn(
     tools: list[ToolDef],
     ctx: AgentContext,
     max_iterations: int,
-    parallel_tools: bool = False,
     call_llm_activity: str = "call_llm",
 ) -> TurnResult:
     """Run the agentic loop until end_turn, terminating tool, or iteration cap.
@@ -129,9 +128,10 @@ async def run_agent_turn(
       1. Call the LLM with the current message history + tool schemas.
       2. Emit any text via `ctx.on_text`.
       3. If stop_reason is `end_turn`, finish.
-      4. Otherwise dispatch every tool_use block (interactions sequentially
-         first, then activity tools — sequential by default, parallel when
-         `parallel_tools=True`).
+      4. Dispatch every tool_use block. Interaction-kind tools run first in
+         emission order (they mutate workflow state); activity-kind tools are
+         then awaited together so Temporal schedules every
+         ActivityTaskScheduled in one event-loop tick.
       5. Append the assistant turn and tool_result turn to `messages`.
 
     The function appends to the caller's `messages` list in place AND returns
@@ -182,11 +182,11 @@ async def run_agent_turn(
 
         # Slot results in the same order as tool_calls.
         tool_results: list[Optional[dict]] = [None] * len(tool_calls)
-        parallel_jobs: list[tuple[int, ToolDef, dict]] = []
+        activity_jobs: list[tuple[int, ToolDef, dict]] = []
         terminator_hit = False
 
-        # First pass: run interaction-kind tools sequentially. They tend to
-        # mutate workflow state and we want their effects ordered.
+        # Interaction-kind tools run inline in emission order so their
+        # workflow-state mutations are deterministic.
         for idx, call in enumerate(tool_calls):
             td = by_name.get(call["name"])
             if td is None:
@@ -212,19 +212,15 @@ async def run_agent_turn(
                 if td.terminates_loop and not is_error:
                     terminator_hit = True
             else:
-                parallel_jobs.append((idx, td, call))
+                activity_jobs.append((idx, td, call))
 
-        # Second pass: activity-kind tools.
-        if parallel_jobs:
-            if parallel_tools:
-                coros = [_run_one(td, call, ctx) for _, td, call in parallel_jobs]
-                outcomes = await asyncio.gather(*coros)
-            else:
-                outcomes = []
-                for _, td, call in parallel_jobs:
-                    outcomes.append(await _run_one(td, call, ctx))
-
-            for (idx, td, call), (content, is_error) in zip(parallel_jobs, outcomes):
+        # Activity-kind tools are awaited together so Temporal schedules
+        # every ActivityTaskScheduled in one event-loop tick.
+        if activity_jobs:
+            outcomes = await asyncio.gather(
+                *(_run_one(td, call, ctx) for _, td, call in activity_jobs)
+            )
+            for (idx, td, call), (content, is_error) in zip(activity_jobs, outcomes):
                 tool_results[idx] = {
                     "type": "tool_result",
                     "tool_use_id": call["id"],

@@ -176,7 +176,6 @@ class ConversationWorkflow:
             tools=all_tools,
             ctx=ctx,
             max_iterations=MAX_ITERATIONS,
-            parallel_tools=True,
         )
 
     async def _post_to_thread(self, text: str):
