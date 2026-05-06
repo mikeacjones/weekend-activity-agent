@@ -120,7 +120,6 @@ async def run_agent_turn(
     tools: list[ToolDef],
     ctx: AgentContext,
     max_iterations: int,
-    parallel_tools: bool = False,
     call_llm_activity: str = "call_llm",
 ) -> TurnResult:
     """Run the agentic loop until end_turn, terminating tool, or iteration cap.
@@ -129,9 +128,11 @@ async def run_agent_turn(
       1. Call the LLM with the current message history + tool schemas.
       2. Emit any text via `ctx.on_text`.
       3. If stop_reason is `end_turn`, finish.
-      4. Otherwise dispatch every tool_use block (interactions sequentially
-         first, then activity tools — sequential by default, parallel when
-         `parallel_tools=True`).
+      4. Otherwise dispatch every tool_use block. Interaction-kind tools run
+         sequentially first (they tend to mutate workflow state); the
+         remaining activity-kind tools then run concurrently via
+         `asyncio.gather` so the workflow schedules all their
+         ActivityTaskScheduled commands in one event-loop tick.
       5. Append the assistant turn and tool_result turn to `messages`.
 
     The function appends to the caller's `messages` list in place AND returns
@@ -214,20 +215,19 @@ async def run_agent_turn(
             else:
                 parallel_jobs.append((idx, td, call))
 
-        # Second pass: activity-kind tools.
+        # Second pass: activity-kind tools all run concurrently. Each
+        # _run_one awaits workflow.execute_activity, so asyncio.gather
+        # yields back to the workflow event loop between calls and
+        # Temporal schedules every ActivityTaskScheduled in one tick.
         if parallel_jobs:
-            if parallel_tools:
-                coros = [_run_one(td, call, ctx) for _, td, call in parallel_jobs]
-                outcomes = await asyncio.gather(*coros)
-            else:
-                outcomes = []
-                for _, td, call in parallel_jobs:
-                    outcomes.append(await _run_one(td, call, ctx))
+            outcomes = await asyncio.gather(
+                *(_run_one(td, call, ctx) for _, td, call in parallel_jobs)
+            )
 
-            for (idx, td, call), (content, is_error) in zip(parallel_jobs, outcomes):
+            for (idx, td, _call), (content, is_error) in zip(parallel_jobs, outcomes):
                 tool_results[idx] = {
                     "type": "tool_result",
-                    "tool_use_id": call["id"],
+                    "tool_use_id": tool_calls[idx]["id"],
                     "content": content,
                     **({"is_error": True} if is_error else {}),
                 }
