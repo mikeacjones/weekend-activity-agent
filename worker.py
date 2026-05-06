@@ -15,7 +15,6 @@ from activities import (
     call_llm_for_report,
     call_llm_simple,
     discuss_tool_proposal,
-    execute_tool,
     get_current_weather_summary,
     notify_tool_proposal,
     parse_report,
@@ -69,8 +68,7 @@ async def main():
             call_llm_for_report,
             call_llm_simple,
             discuss_tool_proposal,
-            execute_tool,  # legacy two-arg dispatcher; remove once in-flight workflows drain
-            execute_tool_dynamic,  # dynamic activity: every tool shows under its own name in the UI
+            execute_tool_dynamic,
             get_current_weather_summary,
             notify_tool_proposal,
             parse_report,

@@ -534,21 +534,6 @@ def discuss_tool_proposal(
 
 
 @activity.defn
-async def execute_tool(name: str, tool_input: dict) -> str:
-    """Legacy two-arg dispatcher. Kept registered for one deploy cycle so
-    workflows mid-loop during deploy don't break on replay; new workflows
-    use the dynamic activity in `agent_harness.dynamic_executor` instead.
-    Remove once all in-flight workflows have drained.
-    """
-    activity.heartbeat(f"Executing (legacy path): {name}")
-    import tool_impls
-    impl = tool_impls.STATIC_IMPLS.get(name)
-    if impl is not None:
-        return await impl(tool_input)
-    return await tool_impls.dispatch_dynamic_tool(name, tool_input)
-
-
-@activity.defn
 async def get_current_weather_summary() -> str:
     """Fetch the current weather forecast and return a summary string."""
     activity.heartbeat("Fetching weather")
