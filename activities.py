@@ -12,7 +12,6 @@ from temporalio import activity
 
 from config import Location, Preferences, build_system_prompt
 from proposal_utils import normalize_proposal, normalize_tool_summary
-from tools import TOOL_DEFINITIONS, dispatch_tool
 
 anthropic_client = Anthropic()
 slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", ""))
@@ -536,14 +535,22 @@ def discuss_tool_proposal(
 
 @activity.defn
 async def execute_tool(name: str, tool_input: dict) -> str:
-    """Execute a single tool call. Independently retryable."""
-    activity.heartbeat(f"Executing: {name}")
-    return await dispatch_tool(name, tool_input)
+    """Legacy two-arg dispatcher. Kept registered for one deploy cycle so
+    workflows mid-loop during deploy don't break on replay; new workflows
+    use the dynamic activity in `agent_harness.dynamic_executor` instead.
+    Remove once all in-flight workflows have drained.
+    """
+    activity.heartbeat(f"Executing (legacy path): {name}")
+    import tool_impls
+    impl = tool_impls.STATIC_IMPLS.get(name)
+    if impl is not None:
+        return await impl(tool_input)
+    return await tool_impls.dispatch_dynamic_tool(name, tool_input)
 
 
 @activity.defn
 async def get_current_weather_summary() -> str:
     """Fetch the current weather forecast and return a summary string."""
     activity.heartbeat("Fetching weather")
-    from tools import get_weather_forecast
-    return await get_weather_forecast()
+    import tool_impls
+    return await tool_impls.get_weather_forecast()
